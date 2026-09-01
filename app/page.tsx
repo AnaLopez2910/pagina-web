@@ -11,7 +11,6 @@ export async function generateMetadata(): Promise<Metadata> {
   if (!catalog) return { title: "Tienda no disponible" };
   const title = `${catalog.store.name} | Catálogo`;
   const description = catalog.store.description ?? catalog.store.heroSubtitle ?? "Belleza que brilla.";
-  const image = catalog.store.heroImageUrls[0] ?? catalog.store.logoUrl ?? undefined;
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
   return {
     title,
@@ -23,14 +22,12 @@ export async function generateMetadata(): Promise<Metadata> {
       siteName: catalog.store.name,
       title,
       description,
-      url: siteUrl,
-      ...(image ? { images: [{ url: image, alt: `Imagen de ${catalog.store.name}` }] } : {})
+      url: siteUrl
     },
     twitter: {
-      card: image ? "summary_large_image" : "summary",
+      card: "summary_large_image",
       title,
-      description,
-      ...(image ? { images: [image] } : {})
+      description
     }
   };
 }

@@ -39,6 +39,11 @@ export type PublicStore = {
   availability: { isOpen: boolean; label: string };
 };
 
+export type PublicStoreBranding = {
+  name: string;
+  logoUrl: string | null;
+};
+
 function mapProduct(
   product: ProductRow,
   categories: Map<string, CategoryRow>,
@@ -109,6 +114,22 @@ export async function getPublicStore(slug?: string) {
     store: mapStore(store as StoreRow, typedCategories),
     products: typedProducts.map((product) => mapProduct(product, new Map(typedCategories.map((category) => [category.id, category])), groups as OptionGroupRow[], options as ProductOptionRow[])),
     availability: getStoreAvailability({ restrictBySchedule: store.restrict_by_schedule, businessHours: store.business_hours })
+  };
+}
+
+export async function getPublicStoreBranding(): Promise<PublicStoreBranding | null> {
+  const supabase = await createClient();
+  const { data: store } = await supabase
+    .from("stores")
+    .select("name,logo_path")
+    .eq("is_published", true)
+    .maybeSingle();
+
+  if (!store) return null;
+
+  return {
+    name: store.name,
+    logoUrl: store.logo_path ? getPublicImageUrl(store.logo_path) : null
   };
 }
 
