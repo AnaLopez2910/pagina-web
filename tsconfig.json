@@ -1,0 +1,55 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "lib/generated/**",
+    "prisma/**",
+    "app/api/auth/**",
+    "app/api/register/**",
+    "app/api/stores/**",
+    "app/api/uploads/**",
+    "app/api/admin/logo-proxy/**",
+    "app/onboarding/**",
+    "app/register/**",
+    "components/onboarding-form.tsx",
+    "lib/auth.ts",
+    "lib/auth-cookie-config.ts",
+    "lib/prisma.ts",
+    "prisma.config.ts"
+  ]
+}
