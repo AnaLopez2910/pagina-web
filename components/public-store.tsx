@@ -46,6 +46,10 @@ function calculateUnitPrice(product: StorefrontProduct, selectedOptionIds: strin
   return product.optionGroups.reduce((total, group) => total + group.options.reduce((sum, option) => selected.has(option.id) ? sum + option.priceDelta : sum, 0), getEffectiveProductPrice(product));
 }
 
+function optionSelectionKey(optionIds: string[]) {
+  return JSON.stringify([...optionIds].sort());
+}
+
 function PriceBlock({ product, large = false, showSalePill = true }: { product: StorefrontProduct; large?: boolean; showSalePill?: boolean }) {
   const discount = getDiscountPercent(product);
   const effectivePrice = getEffectiveProductPrice(product);
@@ -203,20 +207,29 @@ export function PublicStore({ store, products }: { store: PublicStore; products:
         return false;
       }
     }
-    const optionLabels = product.optionGroups.flatMap((group) => group.options.filter((option) => optionIds.includes(option.id)).map((option) => `${group.name}: ${option.name}`));
+    const normalizedOptionIds = [...optionIds].sort();
+    const optionKey = optionSelectionKey(normalizedOptionIds);
+    const optionLabels = product.optionGroups.flatMap((group) => group.options.filter((option) => normalizedOptionIds.includes(option.id)).map((option) => `${group.name}: ${option.name}`));
     const lineId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID()
       : `${product.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    setCart((current) => [...current, {
-      lineId,
-      productId: product.id,
-      productName: product.name,
-      imageUrl: product.imageUrls[0] ?? null,
-      quantity: 1,
-      selectedOptionIds: optionIds,
-      optionLabels,
-      unitPrice: calculateUnitPrice(product, optionIds)
-    }]);
+    setCart((current) => {
+      const existingItem = current.find((item) => item.productId === product.id && optionSelectionKey(item.selectedOptionIds) === optionKey);
+      if (existingItem) {
+        return current.map((item) => item.lineId === existingItem.lineId ? { ...item, quantity: item.quantity + 1 } : item);
+      }
+
+      return [...current, {
+        lineId,
+        productId: product.id,
+        productName: product.name,
+        imageUrl: product.imageUrls[0] ?? null,
+        quantity: 1,
+        selectedOptionIds: normalizedOptionIds,
+        optionLabels,
+        unitPrice: calculateUnitPrice(product, normalizedOptionIds)
+      }];
+    });
     setError("");
     return true;
   }
