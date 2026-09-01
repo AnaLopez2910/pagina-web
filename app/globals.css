@@ -272,7 +272,7 @@ select {
 .public-store .cart-backdrop { position: fixed; inset: 0; z-index: 80; visibility: hidden; background: rgba(25,18,21,.45); opacity: 0; pointer-events: none; transition: opacity .25s ease, visibility 0s linear .25s; }
 .public-store .cart-backdrop.open { opacity: 1; pointer-events: auto; }
 .public-store .cart-backdrop.open { visibility: visible; transition: opacity .25s ease; }
-.public-store .cart-drawer { position: fixed; top: 0; right: 0; z-index: 90; visibility: hidden; width: min(460px, 100%); height: 100vh; height: 100dvh; max-height: 100dvh; height: var(--visual-viewport-height, 100dvh); max-height: var(--visual-viewport-height, 100dvh); overflow: hidden; background: #fff; display: flex; flex-direction: column; box-shadow: -20px 0 60px rgba(42,34,38,.16); transform: translateX(100%); transition: transform .25s ease, visibility 0s linear .25s; }
+.public-store .cart-drawer { position: fixed; top: 0; right: 0; z-index: 90; visibility: hidden; width: min(460px, 100%); height: 100vh; height: 100dvh; max-height: 100dvh; overflow: hidden; background: #fff; display: flex; flex-direction: column; box-shadow: -20px 0 60px rgba(42,34,38,.16); transform: translateX(100%); transition: transform .25s ease, visibility 0s linear .25s; }
 .public-store .cart-drawer.open { visibility: visible; transform: translateX(0); transition: transform .25s ease; }
 .public-store .cart-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--store-border); padding: 18px 22px; }
 .public-store .cart-head h3 { margin: 0; font-family: var(--font-display), Georgia, serif; font-size: 28px; }
