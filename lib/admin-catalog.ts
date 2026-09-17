@@ -6,6 +6,7 @@ import { getMerchantContext } from "@/lib/merchant";
 import { parsePriceToCents } from "@/lib/money";
 import { imageExtension, isSafeImagePath, MEDIA_BUCKET, getPublicImageUrl } from "@/lib/storage";
 import { slugify } from "@/lib/slug";
+import { MAX_PRODUCT_UPLOAD_BYTES } from "@/lib/product-image-compression";
 import type { ProductRow } from "@/types/database";
 
 const nullableStockQuantity = z.preprocess(
@@ -64,6 +65,8 @@ export async function parseProductRequest(request: Request) {
 }
 
 export function validateProductImageFiles(files: File[]) {
+  const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+  if (totalSize > MAX_PRODUCT_UPLOAD_BYTES) return "Las imágenes no pueden superar 4 MB en total.";
   for (const file of files) {
     if (!imageExtension(file.type)) return "Formato de imagen no soportado.";
     if (file.size > 6 * 1024 * 1024) return "Cada imagen no puede superar 6 MB.";
