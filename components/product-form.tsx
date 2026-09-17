@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 
 import { useLockBodyScroll } from "@/components/use-lock-body-scroll";
 import { formatMoney } from "@/lib/money";
+import { optimizeProductImages } from "@/lib/product-image-compression";
 
 type CategoryListItem = {
   id: string;
@@ -49,6 +50,7 @@ type ImageDraft = {
   id: string;
   url: string;
   file?: File;
+  sourceFile?: File;
 };
 
 type OptionDraft = {
@@ -303,6 +305,7 @@ export function ProductForm({
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [imageOptimizing, setImageOptimizing] = useState(false);
   useLockBodyScroll(isProductModalOpen || Boolean(variantDrawer));
 
   const filteredProducts = useMemo(() => {
@@ -432,7 +435,7 @@ export function ProductForm({
     });
   }
 
-  function addImageFiles(files: FileList | null) {
+  async function addImageFiles(files: FileList | null) {
     if (!files?.length) {
       return;
     }
@@ -442,16 +445,35 @@ export function ProductForm({
       return;
     }
 
-    const nextImages = Array.from(files)
+    const addedImages = Array.from(files)
       .slice(0, availableSlots)
       .map((file) => ({
         id: uniqueId(),
         url: URL.createObjectURL(file),
-        file
+        file,
+        sourceFile: file
       }));
 
     setError("");
-    setDraft((current) => ({ ...current, images: [...current.images, ...nextImages].slice(0, 6) }));
+    setImageOptimizing(true);
+    const candidateImages = [...draft.images, ...addedImages].slice(0, 6);
+    try {
+      const sources = candidateImages.filter((image) => image.file).map((image) => image.sourceFile ?? image.file as File);
+      const optimized = await optimizeProductImages(sources);
+      let optimizedIndex = 0;
+      const nextImages = candidateImages.map((image) => {
+        if (!image.file) return image;
+        const file = optimized[optimizedIndex++];
+        return { ...image, file, url: URL.createObjectURL(file) };
+      });
+      revokeImagePreviews(candidateImages);
+      setDraft((current) => ({ ...current, images: nextImages }));
+    } catch (compressionError) {
+      addedImages.forEach((image) => URL.revokeObjectURL(image.url));
+      setError(compressionError instanceof Error ? compressionError.message : "No se pudieron optimizar las imágenes.");
+    } finally {
+      setImageOptimizing(false);
+    }
   }
 
   function toggleVariants(checked: boolean) {
@@ -523,6 +545,7 @@ export function ProductForm({
 
   async function saveProduct(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (imageOptimizing) return;
     if (draft.categoryId === "__new" && !draft.categoryName.trim()) {
       setError("Ingresá el nombre de la nueva categoría.");
       return;
@@ -547,15 +570,24 @@ export function ProductForm({
       }
     });
 
-    const response = await fetch(editingProductId ? `/api/admin/products/${editingProductId}` : "/api/admin/products", {
-      method: editingProductId ? "PATCH" : "POST",
-      body: formData
-    });
+    let response: Response;
+    try {
+      response = await fetch(editingProductId ? `/api/admin/products/${editingProductId}` : "/api/admin/products", {
+        method: editingProductId ? "PATCH" : "POST",
+        body: formData
+      });
+    } catch {
+      setLoading(false);
+      setError("No se pudo conectar para guardar el producto. Intentá nuevamente.");
+      return;
+    }
     const data = await response.json().catch(() => null);
     setLoading(false);
 
     if (!response.ok) {
-      setError(data?.error ?? "No se pudo guardar el producto.");
+      setError(response.status === 413
+        ? "Las imágenes superan el tamaño permitido. Quitá una imagen o elegí archivos más livianos."
+        : data?.error ?? "No se pudo guardar el producto.");
       return;
     }
 
@@ -695,7 +727,7 @@ export function ProductForm({
                 <p className="text-sm font-bold uppercase tracking-[0.18em] text-brand">{editingProductId ? "Editar" : "Nuevo"}</p>
                 <h2 className="text-2xl font-black">Producto</h2>
               </div>
-              <button className="rounded-full border border-line p-2" type="button" onClick={closeProductModal} aria-label="Cerrar producto">
+              <button className="rounded-full border border-line p-2" type="button" disabled={imageOptimizing} onClick={closeProductModal} aria-label="Cerrar producto">
                 <X size={18} />
               </button>
             </div>
@@ -751,11 +783,11 @@ export function ProductForm({
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <div>
                     <h3 className="font-black">Imágenes</h3>
-                    <p className="text-sm font-semibold text-muted">Se suben recién al guardar el producto.</p>
+                    <p className="text-sm font-semibold text-muted">{imageOptimizing ? "Optimizando imágenes..." : "Se optimizan antes de guardar el producto."}</p>
                   </div>
                   <label className="btn-secondary !px-3">
                     <ImagePlus size={17} /> Agregar
-                    <input className="sr-only" type="file" accept="image/*" multiple onChange={(event) => addImageFiles(event.currentTarget.files)} />
+                    <input className="sr-only" type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple disabled={imageOptimizing} onChange={(event) => void addImageFiles(event.currentTarget.files)} />
                   </label>
                 </div>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -764,10 +796,10 @@ export function ProductForm({
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={image.url} alt="" className="h-full w-full object-cover" />
                       <div className="absolute inset-x-1 bottom-1 flex gap-1">
-                        <button className="flex-1 rounded-full bg-white/90 px-2 py-1 text-[11px] font-black" type="button" onClick={() => setCover(index)}>
+                        <button className="flex-1 rounded-full bg-white/90 px-2 py-1 text-[11px] font-black" type="button" disabled={imageOptimizing} onClick={() => setCover(index)}>
                           {index === 0 ? "Portada" : "Hacer portada"}
                         </button>
-                        <button className="rounded-full bg-white/90 px-2 py-1 text-red-600" type="button" onClick={() => removeImage(index)} aria-label="Eliminar imagen">
+                        <button className="rounded-full bg-white/90 px-2 py-1 text-red-600" type="button" disabled={imageOptimizing} onClick={() => removeImage(index)} aria-label="Eliminar imagen">
                           <X size={12} />
                         </button>
                       </div>
@@ -860,8 +892,8 @@ export function ProductForm({
 
             <div className="-mx-5 -mb-5 border-t border-line bg-white/95 px-5 pb-[calc(env(safe-area-inset-bottom)+20px)] pt-4 sm:-mx-6 sm:-mb-6 sm:px-6 sm:pb-6">
               {error ? <p className="mb-3 rounded-2xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p> : null}
-              <button className="btn-primary w-full" disabled={loading}>
-                <Save size={18} /> {loading ? "Guardando..." : editingProductId ? "Guardar cambios" : "Crear producto"}
+              <button className="btn-primary w-full" disabled={loading || imageOptimizing}>
+                <Save size={18} /> {imageOptimizing ? "Optimizando imágenes..." : loading ? "Guardando..." : editingProductId ? "Guardar cambios" : "Crear producto"}
               </button>
             </div>
           </form>
