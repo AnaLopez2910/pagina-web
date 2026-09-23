@@ -14,7 +14,7 @@ export default async function GestionOrdersPage() {
       <header className="panel sparkle-bg bg-gradient-to-br from-[#fff0f6] to-[#f0e7fa] p-6 md:p-8">
         <p className="text-sm font-bold uppercase tracking-[0.2em] text-brand">Pedidos</p>
         <h1 className="font-display mt-2 text-4xl font-black">Pedidos de {store.name}</h1>
-        <p className="mt-2 text-muted">Los pedidos se guardan antes de abrir WhatsApp.</p>
+        <p className="mt-2 text-muted">Consultá los pedidos de la tienda y registrá los que recibís por otros canales.</p>
       </header>
       <OrderManager orders={orders} products={products} />
     </div>

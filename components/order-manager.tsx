@@ -7,6 +7,7 @@ import {
   Eye,
   ListFilter,
   PackageCheck,
+  Plus,
   Printer,
   Search,
   SlidersHorizontal,
@@ -65,6 +66,7 @@ type OrderListItem = {
   customerName: string;
   customerPhone: string;
   fulfillment: string;
+  notes: string | null;
   total: number;
   createdAt: string;
   items: Array<{
@@ -96,6 +98,7 @@ type OrderDraft = {
   customerName: string;
   customerPhone: string;
   fulfillment: string;
+  notes: string;
   items: OrderItemDraft[];
 };
 
@@ -354,6 +357,7 @@ function orderToDraft(order: OrderListItem): OrderDraft {
     customerName: order.customerName,
     customerPhone: order.customerPhone,
     fulfillment: order.fulfillment,
+    notes: order.notes ?? "",
     items: order.items.map((item) => ({ ...item, draftId: item.id, id: item.id, selectedOptionIds: undefined }))
   };
 }
@@ -429,6 +433,7 @@ function printableOrderHtml(order: OrderListItem) {
           <p><strong>Cliente:</strong> ${escapeHtml(order.customerName)}</p>
           <p><strong>Celular:</strong> ${escapeHtml(order.customerPhone)}</p>
           <p><strong>Entrega:</strong> ${escapeHtml(order.fulfillment)}</p>
+          ${order.notes ? `<p><strong>Dirección o indicaciones:</strong> ${escapeHtml(order.notes)}</p>` : ""}
           <p><strong>Fecha:</strong> ${escapeHtml(formatBuenosAiresDate(order.createdAt))}</p>
         </div>
         <table>
@@ -468,6 +473,7 @@ export function OrderManager({ orders: initialOrders, products }: { orders: Orde
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<OrderListItem | null>(null);
   const [editingOrder, setEditingOrder] = useState<OrderListItem | null>(null);
+  const [creatingOrder, setCreatingOrder] = useState(false);
   const [editDraft, setEditDraft] = useState<OrderDraft | null>(null);
   const [addProductId, setAddProductId] = useState("");
   const [openActionsId, setOpenActionsId] = useState<string | null>(null);
@@ -476,7 +482,7 @@ export function OrderManager({ orders: initialOrders, products }: { orders: Orde
   const [error, setError] = useState("");
   const productsById = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
   const actionOrder = openActionsId ? orders.find((order) => order.id === openActionsId) ?? null : null;
-  useLockBodyScroll(filtersOpen || Boolean(selectedOrder) || Boolean(editingOrder) || Boolean(actionOrder));
+  useLockBodyScroll(filtersOpen || Boolean(selectedOrder) || Boolean(editingOrder) || creatingOrder || Boolean(actionOrder));
 
   function replaceFilterParams(nextStatusFilter: StatusFilter, nextAdvancedFilters: AdvancedFilters) {
     const params = new URLSearchParams(searchParams.toString());
@@ -607,13 +613,32 @@ export function OrderManager({ orders: initialOrders, products }: { orders: Orde
   function openOrderEditor(order: OrderListItem) {
     setError("");
     setSelectedOrder(null);
+    setCreatingOrder(false);
     setEditingOrder(order);
     setEditDraft(orderToDraft(order));
     setAddProductId("");
     setOpenActionsId(null);
   }
 
+  function openCreateOrder() {
+    setError("");
+    setSelectedOrder(null);
+    setCreatingOrder(true);
+    setEditingOrder(null);
+    setEditDraft({
+      status: "PENDING_WHATSAPP",
+      customerName: "",
+      customerPhone: "",
+      fulfillment: "Retiro",
+      notes: "",
+      items: []
+    });
+    setAddProductId("");
+    setOpenActionsId(null);
+  }
+
   function closeOrderEditor() {
+    setCreatingOrder(false);
     setEditingOrder(null);
     setEditDraft(null);
     setAddProductId("");
@@ -683,12 +708,17 @@ export function OrderManager({ orders: initialOrders, products }: { orders: Orde
 
   async function saveOrder(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!editingOrder || !editDraft) return;
+    if ((!creatingOrder && !editingOrder) || !editDraft) return;
+    if (creatingOrder && editDraft.items.length === 0) {
+      setError("Agregá al menos un producto al pedido.");
+      return;
+    }
 
-    setUpdatingId(editingOrder.id);
+    const savingId = creatingOrder ? "new" : editingOrder!.id;
+    setUpdatingId(savingId);
     setError("");
-    const response = await fetch(`/api/admin/orders/${editingOrder.id}`, {
-      method: "PATCH",
+    const response = await fetch(creatingOrder ? "/api/admin/orders" : `/api/admin/orders/${editingOrder!.id}`, {
+      method: creatingOrder ? "POST" : "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...editDraft,
@@ -708,8 +738,13 @@ export function OrderManager({ orders: initialOrders, products }: { orders: Orde
       return;
     }
 
-    setOrders((current) => current.map((order) => (order.id === editingOrder.id ? data.order : order)));
+    if (creatingOrder) {
+      setOrders((current) => [data.order, ...current.filter((order) => order.id !== data.order.id)]);
+    } else {
+      setOrders((current) => current.map((order) => (order.id === editingOrder!.id ? data.order : order)));
+    }
     closeOrderEditor();
+    if (creatingOrder) setSelectedOrder(data.order);
   }
 
   async function deleteOrder(order: OrderListItem) {
@@ -783,7 +818,7 @@ export function OrderManager({ orders: initialOrders, products }: { orders: Orde
 
       <section className="panel overflow-hidden">
         <div className="grid gap-3 border-b border-line p-5">
-          <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+          <div className="grid gap-3 md:grid-cols-[1fr_auto_auto]">
             <label className="grid gap-2">
               <span className="text-sm font-black text-ink">Buscar pedido</span>
               <span className="relative">
@@ -796,6 +831,9 @@ export function OrderManager({ orders: initialOrders, products }: { orders: Orde
                 />
               </span>
             </label>
+            <button className="btn-primary self-end !py-3" type="button" onClick={openCreateOrder}>
+              <Plus size={18} /> Crear pedido
+            </button>
             <button className="btn-secondary self-end !py-3" type="button" onClick={openFilters}>
               <SlidersHorizontal size={18} />
               Filtros{activeAdvancedFilters ? ` (${activeAdvancedFilters})` : ""}
@@ -1213,6 +1251,12 @@ export function OrderManager({ orders: initialOrders, products }: { orders: Orde
                     <p className="mt-1 truncate font-black">{selectedOrder.fulfillment}</p>
                   </div>
                 </div>
+                {selectedOrder.notes ? (
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.16em] text-muted">Dirección o indicaciones</p>
+                    <p className="mt-1 whitespace-pre-wrap font-semibold">{selectedOrder.notes}</p>
+                  </div>
+                ) : null}
               </div>
 
               <div className="mt-5 divide-y divide-line rounded-3xl border border-line">
@@ -1263,16 +1307,16 @@ export function OrderManager({ orders: initialOrders, products }: { orders: Orde
         </div>
       ) : null}
 
-      {editingOrder && editDraft ? (
-        <div className="fixed inset-0 z-[100] flex items-end overflow-hidden bg-ink/45 p-0 backdrop-blur-sm sm:items-center sm:justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Editar pedido">
+      {(creatingOrder || editingOrder) && editDraft ? (
+        <div className="fixed inset-0 z-[100] flex items-end overflow-hidden bg-ink/45 p-0 backdrop-blur-sm sm:items-center sm:justify-center sm:p-4" role="dialog" aria-modal="true" aria-label={creatingOrder ? "Crear pedido" : "Editar pedido"}>
           <form
             className="grid max-h-[92dvh] w-full max-w-xl grid-rows-[auto_minmax(0,1fr)_auto] gap-4 overflow-hidden rounded-t-[32px] bg-white p-5 shadow-2xl sm:max-h-[calc(100dvh-32px)] sm:rounded-[32px] sm:p-6"
             onSubmit={saveOrder}
           >
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-sm font-bold uppercase tracking-[0.2em] text-brand">Pedido #{editingOrder.code}</p>
-                <h2 className="mt-1 text-2xl font-black">Editar pedido</h2>
+                <p className="text-sm font-bold uppercase tracking-[0.2em] text-brand">{creatingOrder ? "Nuevo pedido" : `Pedido #${editingOrder?.code}`}</p>
+                <h2 className="mt-1 text-2xl font-black">{creatingOrder ? "Crear pedido" : "Editar pedido"}</h2>
               </div>
               <button className="btn-secondary !h-11 !w-11 !p-0" type="button" onClick={closeOrderEditor} aria-label="Cerrar edición">
                 <X size={20} />
@@ -1287,6 +1331,8 @@ export function OrderManager({ orders: initialOrders, products }: { orders: Orde
                     className="field"
                     value={editDraft.customerName}
                     onChange={(event) => setEditDraft((current) => current ? { ...current, customerName: event.target.value } : current)}
+                    autoComplete="name"
+                    maxLength={100}
                     required
                   />
                 </label>
@@ -1297,6 +1343,8 @@ export function OrderManager({ orders: initialOrders, products }: { orders: Orde
                     inputMode="tel"
                     value={editDraft.customerPhone}
                     onChange={(event) => setEditDraft((current) => current ? { ...current, customerPhone: event.target.value } : current)}
+                    autoComplete="tel"
+                    maxLength={40}
                     required
                   />
                 </label>
@@ -1312,6 +1360,16 @@ export function OrderManager({ orders: initialOrders, products }: { orders: Orde
                   <option>Delivery</option>
                   <option>Coordinar por WhatsApp</option>
                 </select>
+              </label>
+              <label className="grid gap-2">
+                <span className="text-sm font-black">Dirección o indicaciones <span className="font-semibold text-muted">(opcional)</span></span>
+                <textarea
+                  className="field min-h-24 resize-y"
+                  maxLength={500}
+                  value={editDraft.notes}
+                  onChange={(event) => setEditDraft((current) => current ? { ...current, notes: event.target.value } : current)}
+                  placeholder="Dirección de entrega u otra información útil"
+                />
               </label>
               <label className="grid gap-2">
                 <span className="text-sm font-black">Estado</span>
@@ -1331,6 +1389,7 @@ export function OrderManager({ orders: initialOrders, products }: { orders: Orde
                   <p className="mt-1 text-xs font-semibold text-muted">Podés cambiar cantidades, quitar productos o agregar otros.</p>
                 </div>
                 <div className="grid gap-2">
+                  {editDraft.items.length === 0 ? <p className="rounded-2xl bg-surface p-4 text-sm font-semibold text-muted">Todavía no agregaste productos.</p> : null}
                   {editDraft.items.map((item) => {
                     const product = item.productId ? productsById.get(item.productId) : undefined;
                     const unitPrice = draftItemUnitPrice(item, productsById);
@@ -1436,8 +1495,9 @@ export function OrderManager({ orders: initialOrders, products }: { orders: Orde
             <div className="-mx-5 -mb-5 border-t border-line bg-white/95 px-5 pb-[calc(env(safe-area-inset-bottom)+20px)] pt-4 sm:-mx-6 sm:-mb-6 sm:px-6 sm:pb-6">
               <div className="grid gap-3 sm:grid-cols-2">
                 <button className="btn-secondary w-full" type="button" onClick={closeOrderEditor}>Cancelar</button>
-                <button className="btn-primary w-full" type="submit" disabled={updatingId === editingOrder.id}>
-                  <Edit2 size={18} /> {updatingId === editingOrder.id ? "Guardando..." : "Guardar cambios"}
+                <button className="btn-primary w-full" type="submit" disabled={updatingId === (creatingOrder ? "new" : editingOrder?.id)}>
+                  {creatingOrder ? <Plus size={18} /> : <Edit2 size={18} />}
+                  {updatingId === (creatingOrder ? "new" : editingOrder?.id) ? "Guardando..." : creatingOrder ? "Crear pedido" : "Guardar cambios"}
                 </button>
               </div>
             </div>

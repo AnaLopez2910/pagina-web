@@ -79,6 +79,7 @@ export async function getAdminOrders(supabase: SupabaseClient<Database>, storeId
     customerName: order.customer_name,
     customerPhone: order.customer_phone,
     fulfillment: order.fulfillment,
+    notes: order.notes,
     total: order.total,
     createdAt: order.created_at,
     items: (items as OrderItemRow[]).filter((item) => item.order_id === order.id).map((item) => ({
