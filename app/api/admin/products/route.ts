@@ -7,28 +7,13 @@ import {
   normalizePurchasePrice,
   parseProductRequest,
   productSchema,
+  resolveProductCategoryId,
   uploadProductImages,
   validateProductImageFiles
 } from "@/lib/admin-catalog";
 import { getAdminProducts } from "@/lib/admin-data";
 import { getMerchantContext } from "@/lib/merchant";
 import { parsePriceToCents } from "@/lib/money";
-
-async function resolveCategoryId(supabase: Awaited<ReturnType<typeof getMerchantContext>>["supabase"], storeId: string, categoryId: string | null | undefined, categoryName: string | null | undefined) {
-  if (categoryId && categoryId !== "none") {
-    const { data } = await supabase.from("categories").select("id").eq("id", categoryId).eq("store_id", storeId).maybeSingle();
-    if (!data) throw new Error("Categoría inválida.");
-    return data.id;
-  }
-  const name = categoryName?.trim();
-  if (!name) return null;
-  const slug = makeProductSlug(name);
-  const { data: existing } = await supabase.from("categories").select("id").eq("store_id", storeId).eq("slug", slug).maybeSingle();
-  if (existing) return existing.id;
-  const { data, error } = await supabase.from("categories").insert({ store_id: storeId, name, slug }).select("id").single();
-  if (error || !data) throw new Error("No se pudo crear la categoría.");
-  return data.id;
-}
 
 async function createOptionGroups(supabase: Awaited<ReturnType<typeof getMerchantContext>>["supabase"], productId: string, groups: ReturnType<typeof productSchema.parse>["optionGroups"]) {
   for (const [groupIndex, group] of groups.entries()) {
@@ -80,7 +65,7 @@ export async function POST(request: Request) {
   try {
     promoPrice = normalizePromoPrice(result.data.promoPrice, basePrice);
     purchasePrice = normalizePurchasePrice(result.data.purchasePrice);
-    categoryId = await resolveCategoryId(supabase, store.id, result.data.categoryId, result.data.categoryName);
+    categoryId = await resolveProductCategoryId(supabase, store.id, result.data.categoryId, result.data.categoryName);
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Datos inválidos" }, { status: 400 });
   }

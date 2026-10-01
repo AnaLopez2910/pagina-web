@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 
 import {
   makeProductSlug,
@@ -7,6 +8,7 @@ import {
   normalizePurchasePrice,
   parseProductRequest,
   productSchema,
+  resolveProductCategoryId,
   deleteProductImages,
   uploadProductImages,
   validateProductImageFiles
@@ -16,6 +18,25 @@ import { getMerchantContext } from "@/lib/merchant";
 import { parsePriceToCents } from "@/lib/money";
 
 type Params = Promise<{ productId: string }>;
+
+const quickProductUpdateSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("visibility"), isVisible: z.boolean() }),
+  z.object({
+    action: z.literal("price-stock"),
+    basePrice: z.union([z.number(), z.string()]),
+    promoPrice: z.union([z.number(), z.string()]).nullable(),
+    stockQuantity: z.union([z.number().int().min(0).max(999999), z.string()]).nullable()
+  }),
+  z.object({
+    action: z.literal("category"),
+    categoryId: z.string().nullable(),
+    categoryName: z.string().trim().min(2).max(80).optional()
+  })
+]).superRefine((value, context) => {
+  if (value.action === "category" && value.categoryId === "__new" && !value.categoryName) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["categoryName"], message: "Ingresá el nombre de la nueva categoría." });
+  }
+});
 
 async function saveOptionGroups(supabase: Awaited<ReturnType<typeof getMerchantContext>>["supabase"], productId: string, groups: ReturnType<typeof productSchema.parse>["optionGroups"]) {
   const { error: deleteError } = await supabase.from("option_groups").delete().eq("product_id", productId);
@@ -51,6 +72,60 @@ export async function PATCH(request: Request, { params }: { params: Params }) {
   if (!existing) return NextResponse.json({ error: "Producto no encontrado" }, { status: 404 });
 
   const parsedRequest = await parseProductRequest(request).catch(() => ({ body: null, imageFiles: [] as File[] }));
+  const quickUpdate = quickProductUpdateSchema.safeParse(parsedRequest.body);
+  if (quickUpdate.success) {
+    let updates: {
+      is_visible?: boolean;
+      category_id?: string | null;
+      base_price?: number;
+      promo_price?: number | null;
+      stock_quantity?: number | null;
+    };
+    if (quickUpdate.data.action === "visibility") {
+      updates = { is_visible: quickUpdate.data.isVisible };
+    } else if (quickUpdate.data.action === "price-stock") {
+      const basePrice = parsePriceToCents(String(quickUpdate.data.basePrice));
+      if (basePrice <= 0) return NextResponse.json({ error: "El precio debe ser mayor a cero." }, { status: 400 });
+      let promoPrice: number | null;
+      try {
+        promoPrice = normalizePromoPrice(quickUpdate.data.promoPrice, basePrice);
+      } catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : "Precio promocional inválido." }, { status: 400 });
+      }
+      const rawStock = quickUpdate.data.stockQuantity;
+      const normalizedStock = rawStock === null ? null : String(rawStock);
+      if (normalizedStock !== null && !/^\d{1,6}$/.test(normalizedStock)) {
+        return NextResponse.json({ error: "Ingresá un stock válido." }, { status: 400 });
+      }
+      updates = {
+        base_price: basePrice,
+        promo_price: promoPrice,
+        stock_quantity: normalizedStock === null ? null : Number(normalizedStock)
+      };
+    } else {
+      try {
+        updates = {
+          category_id: await resolveProductCategoryId(
+            supabase,
+            store.id,
+            quickUpdate.data.categoryId,
+            quickUpdate.data.categoryName
+          )
+        };
+      } catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : "Datos inválidos" }, { status: 400 });
+      }
+    }
+
+    const { error } = await supabase.from("products").update(updates).eq("id", productId).eq("store_id", store.id);
+    if (error) return NextResponse.json({ error: "No se pudo actualizar el producto." }, { status: 500 });
+    const products = await getAdminProducts(supabase, store.id);
+    return NextResponse.json({ product: products.find((item) => item.id === productId) });
+  }
+  if (typeof parsedRequest.body === "object" && parsedRequest.body !== null && "action" in parsedRequest.body) {
+    return NextResponse.json({ error: quickUpdate.error.issues[0]?.message ?? "Datos inválidos" }, { status: 400 });
+  }
+
   const result = productSchema.safeParse(parsedRequest.body);
   if (!result.success) return NextResponse.json({ error: "Datos inválidos" }, { status: 400 });
   const imageError = validateProductImageFiles(parsedRequest.imageFiles);
@@ -62,15 +137,11 @@ export async function PATCH(request: Request, { params }: { params: Params }) {
   if (basePrice <= 0) return NextResponse.json({ error: "El precio debe ser mayor a cero." }, { status: 400 });
   let promoPrice: number | null;
   let purchasePrice: number;
-  let categoryId: string | null = null;
+  let categoryId: string | null;
   try {
     promoPrice = normalizePromoPrice(result.data.promoPrice, basePrice);
     purchasePrice = normalizePurchasePrice(result.data.purchasePrice);
-    if (result.data.categoryId && result.data.categoryId !== "none") {
-      const { data: category } = await supabase.from("categories").select("id").eq("id", result.data.categoryId).eq("store_id", store.id).maybeSingle();
-      if (!category) throw new Error("Categoría inválida.");
-      categoryId = category.id;
-    }
+    categoryId = await resolveProductCategoryId(supabase, store.id, result.data.categoryId, result.data.categoryName);
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Datos inválidos" }, { status: 400 });
   }

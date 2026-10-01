@@ -18,6 +18,7 @@ const CATEGORY_FALLBACK_IMAGES = [
   "https://images.unsplash.com/photo-1598440947619-2c35fc9aa908?auto=format&fit=crop&w=700&q=80"
 ];
 const CARD_DESCRIPTION_MAX_LENGTH = 72;
+const PUBLIC_PRODUCT_BATCH_SIZE = 25;
 
 type CartItem = {
   lineId: string;
@@ -85,6 +86,8 @@ function whatsappHref(phone: string) {
 export function PublicStore({ store, products }: { store: PublicStore; products: StorefrontProduct[] }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
+  const [visibleProductLimit, setVisibleProductLimit] = useState(PUBLIC_PRODUCT_BATCH_SIZE);
+  const [productLimitRestored, setProductLimitRestored] = useState(false);
   const [heroIndex, setHeroIndex] = useState(0);
   const [heroPaused, setHeroPaused] = useState(false);
   const [activeProduct, setActiveProduct] = useState<StorefrontProduct | null>(null);
@@ -111,12 +114,38 @@ export function PublicStore({ store, products }: { store: PublicStore; products:
     const matchesCategory = category === "all" || (category === "promos" && Boolean(getDiscountPercent(product))) || product.category?.slug === category;
     return matchesQuery && matchesCategory;
   }), [category, normalizedQuery, products]);
+  const visibleProductLimitKey = `catalog:${store.slug}:visible-products`;
+  const visibleProducts = filteredProducts.slice(0, visibleProductLimit);
+  const remainingProductCount = Math.max(0, filteredProducts.length - visibleProducts.length);
   const cartTotal = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
   const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
   const shippingThreshold = store.freeShipping.threshold;
   const shippingProgress = Math.min(100, (cartTotal / shippingThreshold) * 100);
 
   useLockBodyScroll(Boolean(activeProduct) || checkoutOpen || magicVisible);
+
+  useEffect(() => {
+    let restoredLimit = PUBLIC_PRODUCT_BATCH_SIZE;
+    try {
+      const storedLimit = Number(window.localStorage.getItem(visibleProductLimitKey));
+      if (Number.isInteger(storedLimit) && storedLimit >= PUBLIC_PRODUCT_BATCH_SIZE) {
+        restoredLimit = Math.min(storedLimit, Math.max(PUBLIC_PRODUCT_BATCH_SIZE, products.length));
+      }
+    } catch {
+      // Storage can be unavailable in private browsing; the catalog still works in memory.
+    }
+    setVisibleProductLimit(restoredLimit);
+    setProductLimitRestored(true);
+  }, [products.length, visibleProductLimitKey]);
+
+  useEffect(() => {
+    if (!productLimitRestored) return;
+    try {
+      window.localStorage.setItem(visibleProductLimitKey, String(visibleProductLimit));
+    } catch {
+      // Storage can be unavailable in private browsing; the catalog still works in memory.
+    }
+  }, [productLimitRestored, visibleProductLimit, visibleProductLimitKey]);
 
   useEffect(() => {
     if (heroImages.length < 2 || heroPaused) return;
@@ -265,7 +294,13 @@ export function PublicStore({ store, products }: { store: PublicStore; products:
 
   function selectCategory(nextCategory: string) {
     setCategory(nextCategory);
+    setVisibleProductLimit(PUBLIC_PRODUCT_BATCH_SIZE);
     window.setTimeout(() => document.getElementById("productos")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  }
+
+  function updateProductQuery(nextQuery: string) {
+    setQuery(nextQuery);
+    setVisibleProductLimit(PUBLIC_PRODUCT_BATCH_SIZE);
   }
 
   async function submitOrder(event: FormEvent<HTMLFormElement>) {
@@ -375,15 +410,21 @@ export function PublicStore({ store, products }: { store: PublicStore; products:
 
         <section id="productos">
           <div className="container">
-            <div className="section-head product-section-head"><div><h2>Favoritos del momento</h2><p>Una selección de los productos más elegidos.</p></div><div className="product-tools"><div className="store-search"><Search size={17} aria-hidden="true" /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar productos" aria-label="Buscar productos" /></div><div className="chips" role="group" aria-label="Filtrar productos"><button className={`chip ${category === "all" ? "active" : ""}`} aria-pressed={category === "all"} onClick={() => selectCategory("all")} type="button">Todos</button>{hasPromos ? <button className={`chip ${category === "promos" ? "active" : ""}`} aria-pressed={category === "promos"} onClick={() => selectCategory("promos")} type="button">Promos</button> : null}{categories.map((item) => <button className={`chip ${category === item.slug ? "active" : ""}`} aria-pressed={category === item.slug} key={item.id} onClick={() => selectCategory(item.slug)} type="button">{item.name}</button>)}</div></div></div>
+            <div className="section-head product-section-head"><div><h2>Favoritos del momento</h2><p>Una selección de los productos más elegidos.</p></div><div className="product-tools"><div className="store-search"><Search size={17} aria-hidden="true" /><input type="search" value={query} onChange={(event) => updateProductQuery(event.target.value)} placeholder="Buscar productos" aria-label="Buscar productos" /></div><div className="chips" role="group" aria-label="Filtrar productos"><button className={`chip ${category === "all" ? "active" : ""}`} aria-pressed={category === "all"} onClick={() => selectCategory("all")} type="button">Todos</button>{hasPromos ? <button className={`chip ${category === "promos" ? "active" : ""}`} aria-pressed={category === "promos"} onClick={() => selectCategory("promos")} type="button">Promos</button> : null}{categories.map((item) => <button className={`chip ${category === item.slug ? "active" : ""}`} aria-pressed={category === item.slug} key={item.id} onClick={() => selectCategory(item.slug)} type="button">{item.name}</button>)}</div></div></div>
             <div className={`product-grid mobile-cols-${store.mobileProductColumns}`}>
-              {filteredProducts.map((product) => {
+              {visibleProducts.map((product) => {
                 const outOfStock = isOutOfStock(product);
                 const remaining = remainingStock(product);
                 return <article className="product" key={product.id}><button className="product-card-button" onClick={() => openProduct(product)} type="button"><ProductImage product={product} /><div className="product-body"><div className="product-sub">{product.category?.name ?? "Producto"}</div><div className="product-title">{product.name}</div><div className="product-description">{cardDescription(product.description)}</div>{remaining !== null ? <div className={`stock-label ${outOfStock ? "out" : ""}`}>{outOfStock ? "Sin stock" : `Quedan ${remaining}`}</div> : null}<PriceBlock product={product} showSalePill={false} /></div></button><div className="product-actions"><button className={`btn product-add ${outOfStock ? "disabled" : "btn-primary"}`} onClick={() => addCardProduct(product)} disabled={outOfStock} type="button">{outOfStock ? "Sin stock" : product.optionGroups.length ? "Elegir opciones" : "Agregar al carrito"}</button></div></article>;
               })}
             </div>
             {!filteredProducts.length ? <div className="empty-state">No encontramos productos con esos filtros.</div> : null}
+            {filteredProducts.length ? <div className="mt-5 flex flex-col items-center gap-3" aria-live="polite">
+              <p className="text-center text-sm text-muted">Mostrando {visibleProducts.length} de {filteredProducts.length} productos</p>
+              {remainingProductCount > 0 ? <button className="btn btn-primary" onClick={() => setVisibleProductLimit((current) => Math.min(current + PUBLIC_PRODUCT_BATCH_SIZE, filteredProducts.length))} type="button">
+                <Plus size={18} /> Ver más productos
+              </button> : null}
+            </div> : null}
 
             {store.freeShipping.enabled ? <div className="shipping-progress"><div className="shipping-progress-top"><strong>{cartTotal >= shippingThreshold ? "¡Tu pedido tiene envío gratis!" : `Te faltan ${formatMoney(Math.max(0, shippingThreshold - cartTotal))} para tener envío gratis`}</strong><span>Meta: {formatMoney(shippingThreshold)}</span></div><div className="progress" aria-label={`${Math.round(shippingProgress)}% del objetivo de envío gratis`}><div style={{ width: `${shippingProgress}%` }} /></div></div> : null}
           </div>

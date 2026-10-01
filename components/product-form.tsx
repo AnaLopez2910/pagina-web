@@ -1,7 +1,7 @@
 "use client";
 
-import { Check, Eye, EyeOff, ImagePlus, Pencil, Plus, Save, Trash2, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, ImagePlus, MoreHorizontal, Pencil, Plus, Save, Search, SlidersHorizontal, Tag, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { useLockBodyScroll } from "@/components/use-lock-body-scroll";
@@ -86,6 +86,10 @@ type ProductDraft = {
 type VariantDrawerState =
   | { step: "pick" }
   | { step: "edit"; kind: "color" | "size" | "custom"; name: string; values: string[] };
+
+type PriceStockDraft = { basePrice: string; promoPrice: string; stockLimited: boolean; stockQuantity: string };
+
+const PRODUCT_PAGE_SIZE = 25;
 
 const colorSuggestions = [
   { name: "Amarillo", color: "#facc15" },
@@ -303,24 +307,87 @@ export function ProductForm({
   const [newVariantValue, setNewVariantValue] = useState("");
   const [query, setQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [lowStockFilter, setLowStockFilter] = useState(false);
+  const [promoFilter, setPromoFilter] = useState(false);
+  const [visibilityFilter, setVisibilityFilter] = useState<"all" | "visible" | "hidden">("all");
+  const [filterModalOpen, setFilterModalOpen] = useState(false);
+  const [page, setPage] = useState(1);
+  const [expandedVariantProducts, setExpandedVariantProducts] = useState<string[]>([]);
+  const [actionsProduct, setActionsProduct] = useState<ProductListItem | null>(null);
+  const [actionsMenuPosition, setActionsMenuPosition] = useState({ top: 0, left: 0 });
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkCategoryOpen, setBulkCategoryOpen] = useState(false);
+  const [bulkCategoryId, setBulkCategoryId] = useState("");
+  const [bulkCategoryName, setBulkCategoryName] = useState("");
+  const [priceStockProduct, setPriceStockProduct] = useState<ProductListItem | null>(null);
+  const [priceStockDraft, setPriceStockDraft] = useState<PriceStockDraft>({ basePrice: "", promoPrice: "", stockLimited: false, stockQuantity: "" });
+  const [priceStockBusy, setPriceStockBusy] = useState(false);
+  const [quickUpdateProductId, setQuickUpdateProductId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [imageOptimizing, setImageOptimizing] = useState(false);
-  useLockBodyScroll(isProductModalOpen || Boolean(variantDrawer));
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  const menuFirstActionRef = useRef<HTMLButtonElement>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+  useLockBodyScroll(isProductModalOpen || Boolean(variantDrawer) || filterModalOpen || Boolean(priceStockProduct));
 
   const filteredProducts = useMemo(() => {
     return products.filter((product) => {
       const matchesQuery = [product.name, product.description ?? "", product.category?.name ?? ""]
         .join(" ")
-        .toLowerCase()
-        .includes(query.toLowerCase());
+        .toLocaleLowerCase("es-AR")
+        .includes(query.trim().toLocaleLowerCase("es-AR"));
       const matchesCategory =
         categoryFilter === "all" ||
         (categoryFilter === "none" && !product.category) ||
         product.category?.id === categoryFilter;
-      return matchesQuery && matchesCategory;
+      const matchesLowStock = !lowStockFilter || (product.stockQuantity !== null && product.stockQuantity < 5);
+      const matchesPromo = !promoFilter || Boolean(discountLabel(product));
+      const matchesVisibility = visibilityFilter === "all" || product.isVisible === (visibilityFilter === "visible");
+      return matchesQuery && matchesCategory && matchesLowStock && matchesPromo && matchesVisibility;
     });
-  }, [categoryFilter, products, query]);
+  }, [categoryFilter, lowStockFilter, products, promoFilter, query, visibilityFilter]);
+
+  const pageCount = Math.max(1, Math.ceil(filteredProducts.length / PRODUCT_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const pageProducts = filteredProducts.slice((currentPage - 1) * PRODUCT_PAGE_SIZE, currentPage * PRODUCT_PAGE_SIZE);
+  const activeFilterCount = [categoryFilter !== "all", lowStockFilter, promoFilter, visibilityFilter !== "all"].filter(Boolean).length;
+  const selectedFilteredCount = filteredProducts.filter((product) => selectedProductIds.has(product.id)).length;
+  const selectedProducts = products.filter((product) => selectedProductIds.has(product.id));
+  const allFilteredSelected = filteredProducts.length > 0 && selectedFilteredCount === filteredProducts.length;
+
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = selectedFilteredCount > 0 && !allFilteredSelected;
+  }, [allFilteredSelected, selectedFilteredCount]);
+
+  useEffect(() => {
+    if (actionsProduct) menuFirstActionRef.current?.focus();
+  }, [actionsProduct]);
+
+  useEffect(() => {
+    if (!filterModalOpen && !actionsProduct && !priceStockProduct) return;
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setFilterModalOpen(false);
+        if (actionsProduct) closeProductMenu();
+        setPriceStockProduct(null);
+      }
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [actionsProduct, filterModalOpen, priceStockProduct]);
+
+  useEffect(() => {
+    if (!actionsProduct) return;
+    function closeMenu() { closeProductMenu(false); }
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    return () => {
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+    };
+  }, [actionsProduct]);
 
   async function refreshCategories() {
     const response = await fetch("/api/admin/categories");
@@ -329,6 +396,163 @@ export function ProductForm({
     }
     const data = await response.json();
     setCategories(data.categories);
+  }
+
+  function clearSelection() {
+    setSelectedProductIds(new Set());
+    setBulkCategoryOpen(false);
+    setBulkCategoryId("");
+    setBulkCategoryName("");
+  }
+
+  function clearProductFilters() {
+    setCategoryFilter("all");
+    setLowStockFilter(false);
+    setPromoFilter(false);
+    setVisibilityFilter("all");
+    setPage(1);
+    clearSelection();
+  }
+
+  function toggleAllFilteredProducts() {
+    setSelectedProductIds((current) => {
+      const next = new Set(current);
+      if (allFilteredSelected) filteredProducts.forEach((product) => next.delete(product.id));
+      else filteredProducts.forEach((product) => next.add(product.id));
+      return next;
+    });
+  }
+
+  function toggleProductSelection(productId: string) {
+    setSelectedProductIds((current) => {
+      const next = new Set(current);
+      if (next.has(productId)) next.delete(productId);
+      else next.add(productId);
+      return next;
+    });
+  }
+
+  function closeProductMenu(restoreFocus = true) {
+    setActionsProduct(null);
+    if (restoreFocus) window.requestAnimationFrame(() => menuTriggerRef.current?.focus());
+  }
+
+  function openProductMenu(event: React.MouseEvent<HTMLButtonElement>, product: ProductListItem) {
+    menuTriggerRef.current = event.currentTarget;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const menuWidth = Math.min(272, window.innerWidth - 24);
+    const menuHeight = 260;
+    let top = rect.bottom + 8;
+    if (top + menuHeight > window.innerHeight - 12) top = rect.top - menuHeight - 8;
+    top = Math.max(12, Math.min(top, window.innerHeight - menuHeight - 12));
+    const left = Math.max(12, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 12));
+    setActionsMenuPosition({ top, left });
+    setActionsProduct(product);
+  }
+
+  function openDuplicateProduct(product: ProductListItem) {
+    setActionsProduct(null);
+    setEditingProductId(null);
+    const copySuffix = " (copia)";
+    const copyName = `${product.name.slice(0, 120 - copySuffix.length).trimEnd()}${copySuffix}`;
+    replaceDraft(productToDraft(product));
+    setDraft((current) => ({ ...current, name: copyName }));
+    setVariantDrawer(null);
+    setNewVariantValue("");
+    setError("");
+    setProductModalOpen(true);
+  }
+
+  function openPriceStockEditor(product: ProductListItem) {
+    setActionsProduct(null);
+    setError("");
+    setPriceStockProduct(product);
+    setPriceStockDraft({
+      basePrice: formatInteger(product.basePrice),
+      promoPrice: product.promoPrice ? formatInteger(product.promoPrice) : "",
+      stockLimited: product.stockQuantity !== null,
+      stockQuantity: product.stockQuantity === null ? "" : formatInteger(product.stockQuantity)
+    });
+  }
+
+  async function savePriceStock(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!priceStockProduct) return;
+    if (!unformatInteger(priceStockDraft.basePrice)) {
+      setError("Ingresá un precio base mayor a cero.");
+      return;
+    }
+
+    setPriceStockBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/products/${priceStockProduct.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "price-stock",
+          basePrice: unformatInteger(priceStockDraft.basePrice),
+          promoPrice: priceStockDraft.promoPrice ? unformatInteger(priceStockDraft.promoPrice) : null,
+          stockQuantity: priceStockDraft.stockLimited ? unformatInteger(priceStockDraft.stockQuantity) || "0" : null
+        })
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setError(data?.error ?? "No se pudo actualizar el precio y el stock.");
+        return;
+      }
+      setProducts((current) => current.map((product) => product.id === priceStockProduct.id ? data.product : product));
+      setPriceStockProduct(null);
+      router.refresh();
+    } catch {
+      setError("No se pudo conectar para actualizar el precio y el stock.");
+    } finally {
+      setPriceStockBusy(false);
+    }
+  }
+
+  async function applyBulkUpdate(change: { action: "visibility"; isVisible: boolean } | { action: "category"; categoryId: string | null; categoryName?: string }) {
+    const productIds = Array.from(selectedProductIds);
+    if (!productIds.length) return;
+    setBulkBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/products/bulk", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...change, productIds })
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setError(data?.error ?? "No se pudieron actualizar los productos seleccionados.");
+        return;
+      }
+      const updatedById = new Map<string, ProductListItem>((data.products ?? []).map((product: ProductListItem) => [product.id, product]));
+      setProducts((current) => current.map((product) => updatedById.get(product.id) ?? product));
+      setPage(1);
+      if (change.action === "category") await refreshCategories();
+      clearSelection();
+      router.refresh();
+    } catch {
+      setError("No se pudo conectar para actualizar los productos seleccionados.");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  function applyBulkCategory() {
+    if (!bulkCategoryId) return;
+    const creating = bulkCategoryId === "__new";
+    const categoryName = bulkCategoryName.trim();
+    if (creating && categoryName.length < 2) {
+      setError("Ingresá un nombre de categoría de al menos 2 caracteres.");
+      return;
+    }
+    void applyBulkUpdate({
+      action: "category",
+      categoryId: bulkCategoryId === "none" ? null : bulkCategoryId,
+      ...(creating ? { categoryName } : {})
+    });
   }
 
   function replaceDraft(nextDraft: ProductDraft) {
@@ -347,11 +571,13 @@ export function ProductForm({
   }
 
   function openNewProduct() {
+    setActionsProduct(null);
     resetDraft();
     setProductModalOpen(true);
   }
 
   function openEditProduct(product: ProductListItem) {
+    setActionsProduct(null);
     setEditingProductId(product.id);
     replaceDraft(productToDraft(product));
     setVariantDrawer(null);
@@ -543,6 +769,35 @@ export function ProductForm({
     setError("");
   }
 
+  async function saveQuickProductChange(product: ProductListItem, change: { action: "visibility"; isVisible: boolean }) {
+    setQuickUpdateProductId(product.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/products/${product.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(change)
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setError(data?.error ?? "No se pudo actualizar el producto.");
+        return;
+      }
+      setProducts((current) => current.map((item) => (item.id === product.id ? data.product : item)));
+      router.refresh();
+    } catch {
+      setError("No se pudo conectar para actualizar el producto. Intentá nuevamente.");
+    } finally {
+      setQuickUpdateProductId(null);
+    }
+  }
+
+  function toggleVariantDetails(productId: string) {
+    setExpandedVariantProducts((current) => current.includes(productId)
+      ? current.filter((id) => id !== productId)
+      : [...current, productId]);
+  }
+
   async function saveProduct(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (imageOptimizing) return;
@@ -594,6 +849,7 @@ export function ProductForm({
     setProducts((current) =>
       editingProductId ? current.map((product) => (product.id === editingProductId ? data.product : product)) : [data.product, ...current]
     );
+    if (!editingProductId) setPage(1);
     await refreshCategories();
     resetDraft();
     setProductModalOpen(false);
@@ -601,19 +857,7 @@ export function ProductForm({
   }
 
   async function toggleProductVisibility(product: ProductListItem) {
-    setError("");
-    const response = await fetch(`/api/admin/products/${product.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(productToPayload(product, { isVisible: !product.isVisible }))
-    });
-    const data = await response.json().catch(() => null);
-    if (!response.ok) {
-      setError(data?.error ?? "No se pudo actualizar el producto.");
-      return;
-    }
-    setProducts((current) => current.map((item) => (item.id === product.id ? data.product : item)));
-    router.refresh();
+    await saveQuickProductChange(product, { action: "visibility", isVisible: !product.isVisible });
   }
 
   async function deleteProduct(product: ProductListItem) {
@@ -628,6 +872,11 @@ export function ProductForm({
       return;
     }
     setProducts((current) => current.filter((item) => item.id !== product.id));
+    setSelectedProductIds((current) => {
+      const next = new Set(current);
+      next.delete(product.id);
+      return next;
+    });
     await refreshCategories();
     if (editingProductId === product.id) {
       resetDraft();
@@ -639,85 +888,238 @@ export function ProductForm({
   return (
     <div className="grid gap-6">
       <section className="panel overflow-hidden">
-        <div className="grid gap-3 border-b border-line p-4 sm:p-5 md:grid-cols-[1fr_220px_auto]">
-          <label className="grid gap-2 text-sm font-bold">
-            Buscar
-            <input className="field" placeholder="Producto o categoría" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 border-b border-line p-3 sm:flex sm:items-center sm:p-4">
+          <label className="relative min-w-0 flex-1">
+            <span className="sr-only">Buscar productos por nombre o categoría</span>
+            <Search size={17} aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" />
+            <input className="field !min-h-12 !pl-10" placeholder="Buscar por nombre o categoría" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); clearSelection(); }} />
           </label>
-          <label className="grid gap-2 text-sm font-bold">
-            Categoría
-            <select className="field" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
-              <option value="all">Todas las categorías</option>
-              <option value="none">Sin categoría</option>
-              {categories.map((category) => (
-                <option value={category.id} key={category.id}>
-                  {category.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button className="btn-primary mt-auto w-full whitespace-nowrap md:w-auto" type="button" onClick={openNewProduct}>
+          <button className="btn-secondary relative !min-h-12 !w-12 !rounded-xl !p-0 sm:!w-auto sm:!px-4" type="button" onClick={() => setFilterModalOpen(true)} aria-label="Abrir filtros" aria-haspopup="dialog" aria-expanded={filterModalOpen}>
+            <SlidersHorizontal size={17} /> <span className="hidden sm:inline">Filtrar</span>
+            {activeFilterCount ? <span className="grid h-5 min-w-5 place-items-center rounded-full bg-brand px-1 text-[11px] font-black text-white">{activeFilterCount}</span> : null}
+          </button>
+          <button className="btn-primary col-span-2 !min-h-12 w-full whitespace-nowrap sm:col-span-1 sm:ml-auto sm:w-auto" type="button" onClick={openNewProduct}>
             <Plus size={17} /> Nuevo producto
           </button>
         </div>
 
-        {error && !isProductModalOpen ? <p className="border-b border-line bg-red-50 p-4 text-sm font-semibold text-red-700">{error}</p> : null}
+        {error && !isProductModalOpen && !priceStockProduct ? <p className="border-b border-line bg-red-50 p-4 text-sm font-semibold text-red-700">{error}</p> : null}
+
+        <div className="flex min-h-12 items-center justify-between gap-3 border-b border-line px-3 py-2 text-sm sm:px-4">
+          <label className="flex min-h-9 min-w-0 cursor-pointer items-center gap-2.5">
+            <input ref={selectAllRef} className="h-5 w-5 shrink-0 cursor-pointer rounded border-slate-400 accent-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" type="checkbox" checked={allFilteredSelected} onChange={toggleAllFilteredProducts} disabled={filteredProducts.length === 0} aria-label="Seleccionar todos los productos filtrados" />
+            <span className="truncate font-bold">{selectedProductIds.size ? `${selectedProductIds.size} seleccionados` : `${filteredProducts.length} producto${filteredProducts.length === 1 ? "" : "s"}`}</span>
+          </label>
+          {selectedProductIds.size ? <button className="shrink-0 font-bold text-brand underline underline-offset-4" type="button" onClick={clearSelection}>Limpiar selección</button> : activeFilterCount ? <button className="shrink-0 font-bold text-brand underline underline-offset-4" type="button" onClick={clearProductFilters}>Limpiar filtros</button> : <a className="shrink-0 text-right font-bold text-brand" href="/gestion/categorias">Administrar categorías</a>}
+        </div>
+
+        {selectedProductIds.size ? <div className="grid gap-2 border-b border-line bg-surface px-3 py-2.5 sm:flex sm:flex-wrap sm:items-center sm:px-4">
+          <p className="w-full text-xs font-bold text-muted sm:w-auto sm:pr-1">Editar selección</p>
+          <div className="flex flex-wrap gap-2">
+            <button className="btn-secondary !min-h-10 !rounded-xl !px-3 !py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50" type="button" onClick={() => void applyBulkUpdate({ action: "visibility", isVisible: true })} disabled={bulkBusy || selectedProducts.every((product) => product.isVisible)}>
+              <Eye size={15} /> Mostrar
+            </button>
+            <button className="btn-secondary !min-h-10 !rounded-xl !px-3 !py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50" type="button" onClick={() => void applyBulkUpdate({ action: "visibility", isVisible: false })} disabled={bulkBusy || selectedProducts.every((product) => !product.isVisible)}>
+              <EyeOff size={15} /> Ocultar
+            </button>
+            <button className="btn-secondary !min-h-10 !rounded-xl !px-3 !py-2 text-xs" type="button" onClick={() => { setBulkCategoryOpen((open) => !open); setBulkCategoryId(""); setBulkCategoryName(""); }} aria-expanded={bulkCategoryOpen}>
+              <Tag size={15} /> Categoría
+            </button>
+            {bulkBusy ? <span className="self-center text-xs font-bold text-muted">Guardando…</span> : null}
+          </div>
+        </div> : null}
+
+        {selectedProductIds.size && bulkCategoryOpen ? <div className="grid gap-2 border-b border-line bg-white p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end sm:p-4">
+          <label className="grid gap-1 text-xs font-bold text-muted">
+            Categoría para {selectedProductIds.size} producto{selectedProductIds.size === 1 ? "" : "s"}
+            <select className="field !min-h-11 !rounded-xl !py-2 text-sm" value={bulkCategoryId} onChange={(event) => { setBulkCategoryId(event.target.value); setBulkCategoryName(""); }} disabled={bulkBusy}>
+              <option value="">Elegí una categoría</option>
+              <option value="none">Sin categoría</option>
+              {categories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}
+              <option value="__new">+ Crear categoría</option>
+            </select>
+          </label>
+          {bulkCategoryId === "__new" ? <label className="grid gap-1 text-xs font-bold text-muted">
+            Nombre de categoría
+            <input className="field !min-h-11 !rounded-xl !py-2 text-sm" placeholder="Principales" value={bulkCategoryName} onChange={(event) => setBulkCategoryName(event.target.value)} maxLength={80} disabled={bulkBusy} />
+          </label> : <p className="pb-2 text-xs leading-relaxed text-muted">El cambio se aplica a toda la selección, incluso en otras páginas.</p>}
+          <div className="flex gap-2 sm:pb-0.5">
+            <button className="btn-primary !min-h-10 flex-1 !rounded-xl !px-3 !py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50 sm:flex-none" type="button" onClick={applyBulkCategory} disabled={bulkBusy || !bulkCategoryId || (bulkCategoryId === "__new" && bulkCategoryName.trim().length < 2)}>
+              {bulkBusy ? "Guardando…" : "Aplicar"}
+            </button>
+            <button className="btn-secondary !min-h-10 !rounded-xl !px-3 !py-2 text-sm" type="button" onClick={() => setBulkCategoryOpen(false)} disabled={bulkBusy}>Cancelar</button>
+          </div>
+        </div> : null}
 
         <div className="divide-y divide-line">
           {filteredProducts.length === 0 ? (
-            <p className="p-5 text-muted">Todavía no hay productos para mostrar.</p>
+            <div className="p-5">
+              <p className="font-bold">{products.length ? "No encontramos productos con esos filtros." : "Todavía no hay productos para mostrar."}</p>
+              {products.length ? <p className="mt-1 text-sm text-muted">Probá cambiar la búsqueda o quitar algún filtro.</p> : <p className="mt-1 text-sm text-muted">Cuando agregues uno, va a aparecer acá.</p>}
+            </div>
           ) : (
-            filteredProducts.map((product) => {
+            pageProducts.map((product) => {
               const label = discountLabel(product);
+              const variantCount = product.optionGroups.reduce((total, group) => total + group.options.length, 0);
+              const variantsExpanded = expandedVariantProducts.includes(product.id);
+              const quickUpdateBusy = quickUpdateProductId === product.id;
               return (
-                <article key={product.id} className="grid gap-4 p-4 sm:p-5 md:grid-cols-[112px_1fr_auto] md:items-center">
-                  <div className="relative aspect-[16/9] overflow-hidden rounded-2xl bg-surface md:aspect-square">
-                    {product.imageUrls[0] ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={product.imageUrls[0]} alt={product.name} className="h-full w-full object-cover" />
-                    ) : (
-                      <div className="flex h-full items-center justify-center text-sm font-bold text-muted">Sin imagen</div>
-                    )}
-                    {label ? (
-                      <span className="absolute left-2 top-2 rounded-full bg-red-600 px-2 py-1 text-[11px] font-black text-white">
-                        {label}
-                      </span>
-                    ) : null}
+                <article key={product.id} className="px-3 py-3 sm:p-4">
+                  <div className="grid grid-cols-[20px_56px_minmax(0,1fr)_auto] items-center gap-2 sm:grid-cols-[24px_76px_minmax(0,1fr)_auto] sm:gap-4">
+                    <label className="grid min-h-9 min-w-5 cursor-pointer place-items-center" aria-label={`Seleccionar ${product.name}`}>
+                      <input className="h-5 w-5 cursor-pointer rounded border-slate-400 accent-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" type="checkbox" checked={selectedProductIds.has(product.id)} onChange={() => toggleProductSelection(product.id)} />
+                    </label>
+
+                    <div className="relative h-14 w-14 overflow-hidden rounded-xl bg-surface sm:h-[76px] sm:w-[76px]">
+                      {product.imageUrls[0] ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={product.imageUrls[0]} alt={product.name} className="h-full w-full object-cover" />
+                      ) : <div className="grid h-full place-items-center px-1 text-center text-[10px] font-bold text-muted">Sin imagen</div>}
+                      {label ? <span className="absolute left-1 top-1 rounded-md bg-red-600 px-1.5 py-0.5 text-[9px] font-black text-white">{label}</span> : null}
+                    </div>
+
+                    <div className="min-w-0">
+                      <h2 className="line-clamp-2 text-[13px] font-extrabold leading-[1.2] sm:text-base">{product.name}</h2>
+                      <p className="mt-1 truncate text-[10px] font-semibold leading-tight text-muted sm:text-xs">
+                        <span className={product.isVisible ? "text-green-800" : "text-slate-600"}>{product.isVisible ? "Visible" : "Oculto"}</span> · {stockLabel(product)}
+                      </p>
+                      <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                        <strong className={label ? "text-base leading-none text-red-600 sm:text-lg" : "text-base leading-none sm:text-lg"}>{formatMoney(effectivePrice(product))}</strong>
+                        {label ? <span className="text-[10px] font-bold text-muted line-through sm:text-xs">{formatMoney(product.basePrice)}</span> : null}
+                      </div>
+                      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5">
+                        <span className="inline-flex max-w-[140px] items-center gap-1 truncate text-[10px] font-bold text-brand sm:text-xs"><Tag size={12} /> {product.category?.name ?? "Sin categoría"}</span>
+                        {variantCount ? <button className="inline-flex min-h-7 items-center gap-0.5 text-[10px] font-bold text-muted sm:text-xs" type="button" onClick={() => toggleVariantDetails(product.id)} aria-expanded={variantsExpanded}>
+                          <ChevronDown size={13} className={variantsExpanded ? "rotate-180 transition-transform" : "transition-transform"} /> {variantsExpanded ? "Ocultar" : `${variantCount} variante${variantCount === 1 ? "" : "s"}`}
+                        </button> : null}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center">
+                      <button className="btn-secondary !h-9 !w-9 !rounded-xl !p-0 disabled:cursor-not-allowed disabled:opacity-50" type="button" onClick={(event) => openProductMenu(event, product)} disabled={quickUpdateBusy || bulkBusy} aria-label={`Más acciones para ${product.name}`} aria-haspopup="menu" aria-expanded={actionsProduct?.id === product.id}>
+                        <MoreHorizontal size={19} />
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="text-xl font-black leading-tight md:truncate">{product.name}</h2>
-                      <span className={`rounded-full px-2.5 py-1 text-xs font-black ${product.isVisible ? "bg-green-100 text-green-800" : "bg-slate-100 text-slate-600"}`}>
-                        {product.isVisible ? "Visible" : "Oculto"}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-sm font-semibold text-muted">
-                      {product.category?.name ?? "Sin categoría"} · {product.imageUrls.length} imagen(es) · {product.optionGroups.length} variante(s) · {stockLabel(product)}
-                    </p>
-                    <div className="mt-2 flex flex-wrap items-baseline gap-2">
-                      <strong className={label ? "text-2xl text-red-600" : "text-2xl"}>{formatMoney(effectivePrice(product))}</strong>
-                      {label ? <span className="font-bold text-muted line-through">{formatMoney(product.basePrice)}</span> : null}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-[auto_1fr_auto] gap-2 md:flex md:flex-wrap md:justify-end">
-                    <button className="btn-secondary !px-3" type="button" onClick={() => toggleProductVisibility(product)} aria-label={product.isVisible ? "Ocultar producto" : "Mostrar producto"}>
-                      {product.isVisible ? <EyeOff size={17} /> : <Eye size={17} />}
-                    </button>
-                    <button className="btn-secondary !px-3" type="button" onClick={() => openEditProduct(product)}>
-                      <Pencil size={17} /> Editar
-                    </button>
-                    <button className="btn-secondary !px-3 !text-red-600" type="button" onClick={() => deleteProduct(product)} aria-label="Eliminar producto">
-                      <Trash2 size={17} />
-                    </button>
-                  </div>
+                  {variantsExpanded ? <div className="mt-3 grid gap-2 rounded-xl border border-line px-3 py-2.5 sm:ml-20">
+                    {product.optionGroups.map((group) => <p key={group.id} className="text-xs text-muted"><strong className="text-ink">{group.name}:</strong> {group.options.map((option) => option.name).join(", ")}</p>)}
+                  </div> : null}
                 </article>
               );
             })
           )}
         </div>
+
+        {filteredProducts.length > PRODUCT_PAGE_SIZE ? <div className="flex flex-col gap-3 border-t border-line px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm font-semibold text-muted">Mostrando {(currentPage - 1) * PRODUCT_PAGE_SIZE + 1}–{Math.min(currentPage * PRODUCT_PAGE_SIZE, filteredProducts.length)} de {filteredProducts.length}</p>
+          <div className="flex items-center justify-between gap-2 sm:justify-end">
+            <button className="btn-secondary !min-h-10 !rounded-xl !px-3 !py-2 text-sm" type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={currentPage === 1}>
+              <ChevronLeft size={16} /> Anterior
+            </button>
+            <span className="min-w-20 text-center text-sm font-bold">{currentPage} / {pageCount}</span>
+            <button className="btn-secondary !min-h-10 !rounded-xl !px-3 !py-2 text-sm" type="button" onClick={() => setPage((current) => Math.min(pageCount, current + 1))} disabled={currentPage === pageCount}>
+              Siguiente <ChevronRight size={16} />
+            </button>
+          </div>
+        </div> : null}
       </section>
+
+      {filterModalOpen ? <div className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/45 p-0 sm:items-center sm:p-4" role="presentation" onClick={() => setFilterModalOpen(false)}>
+        <section className="panel grid max-h-[90dvh] w-full max-w-lg gap-5 overflow-y-auto rounded-b-none p-5 sm:rounded-2xl sm:p-6" role="dialog" aria-modal="true" aria-labelledby="product-filter-title" onClick={(event) => event.stopPropagation()}>
+          <header className="flex items-start justify-between gap-4">
+            <div><h2 id="product-filter-title" className="text-xl font-black">Filtrar productos</h2><p className="mt-1 text-sm text-muted">Combiná las opciones para acotar la lista.</p></div>
+            <button className="btn-secondary !h-10 !w-10 !rounded-xl !p-0" type="button" onClick={() => setFilterModalOpen(false)} aria-label="Cerrar filtros"><X size={18} /></button>
+          </header>
+          <label className="grid gap-2 text-sm font-bold">Categoría
+            <select className="field" value={categoryFilter} onChange={(event) => { setCategoryFilter(event.target.value); setPage(1); clearSelection(); }}>
+              <option value="all">Todas las categorías</option>
+              <option value="none">Sin categoría</option>
+              {categories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}
+            </select>
+          </label>
+          <fieldset className="grid gap-2">
+            <legend className="mb-2 text-sm font-bold">Disponibilidad en la web</legend>
+            {([ ["all", "Todos"], ["visible", "Visibles"], ["hidden", "Ocultos"] ] as const).map(([value, label]) => <label key={value} className={`flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border px-3 ${visibilityFilter === value ? "border-brand bg-blush/50" : "border-line bg-white"}`}>
+              <input type="radio" name="product-visibility-filter" value={value} checked={visibilityFilter === value} onChange={() => { setVisibilityFilter(value); setPage(1); clearSelection(); }} />
+              <span className="text-sm font-semibold">{label}</span>
+            </label>)}
+          </fieldset>
+          <fieldset className="grid gap-2">
+            <legend className="mb-2 text-sm font-bold">Estado del producto</legend>
+            <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border border-line bg-white px-3">
+              <input type="checkbox" checked={lowStockFilter} onChange={(event) => { setLowStockFilter(event.target.checked); setPage(1); clearSelection(); }} />
+              <span className="text-sm font-semibold">Bajo stock <span className="font-normal text-muted">(menos de 5 unidades)</span></span>
+            </label>
+            <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border border-line bg-white px-3">
+              <input type="checkbox" checked={promoFilter} onChange={(event) => { setPromoFilter(event.target.checked); setPage(1); clearSelection(); }} />
+              <span className="text-sm font-semibold">Productos en oferta</span>
+            </label>
+          </fieldset>
+          <div className="flex gap-2 border-t border-line pt-4">
+            <button className="btn-secondary min-h-11 flex-1 !rounded-xl" type="button" onClick={clearProductFilters}>Limpiar</button>
+            <button className="btn-primary min-h-11 flex-1 !rounded-xl" type="button" onClick={() => setFilterModalOpen(false)}>Ver {filteredProducts.length} productos</button>
+          </div>
+        </section>
+      </div> : null}
+
+      {actionsProduct ? <>
+        <button className="fixed inset-0 z-[75] cursor-default bg-transparent" type="button" aria-label="Cerrar menú de acciones" onClick={() => closeProductMenu()} />
+        <div className="fixed z-[76] w-[min(17rem,calc(100vw-1.5rem))] overflow-hidden rounded-2xl border border-line bg-white p-1.5 shadow-[0_10px_35px_rgba(52,38,53,0.2)]" style={actionsMenuPosition} role="menu" aria-label={`Acciones para ${actionsProduct.name}`}>
+          <button ref={menuFirstActionRef} className="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm font-semibold text-brand hover:bg-lilac focus-visible:bg-lilac focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2" type="button" role="menuitem" onClick={() => openDuplicateProduct(actionsProduct)}>
+            <Copy size={18} aria-hidden="true" /> Duplicar producto
+          </button>
+          <button className="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm font-semibold hover:bg-surface focus-visible:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2" type="button" role="menuitem" onClick={() => openEditProduct(actionsProduct)}>
+            <Pencil size={18} aria-hidden="true" /> Editar producto
+          </button>
+          <button className="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm font-semibold hover:bg-surface focus-visible:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2" type="button" role="menuitem" onClick={() => openPriceStockEditor(actionsProduct)}>
+            <Pencil size={18} aria-hidden="true" /> Editar precio y stock
+          </button>
+          <button className="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm font-semibold hover:bg-surface focus-visible:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2" type="button" role="menuitem" onClick={() => { const product = actionsProduct; setActionsProduct(null); void toggleProductVisibility(product); }} disabled={quickUpdateProductId === actionsProduct.id}>
+            {actionsProduct.isVisible ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+            {actionsProduct.isVisible ? "Ocultar producto" : "Mostrar producto"}
+          </button>
+          <button className="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm font-semibold text-red-700 hover:bg-red-50 focus-visible:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2" type="button" role="menuitem" onClick={() => { const product = actionsProduct; setActionsProduct(null); void deleteProduct(product); }}>
+            <Trash2 size={18} aria-hidden="true" /> Borrar producto
+          </button>
+        </div>
+      </> : null}
+
+      {priceStockProduct ? <div className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/45 p-0 sm:items-center sm:p-4" role="presentation" onClick={() => { if (!priceStockBusy) setPriceStockProduct(null); }}>
+        <form className="panel grid max-h-[92dvh] w-full max-w-lg gap-5 overflow-y-auto rounded-b-none p-4 sm:rounded-2xl sm:p-6" role="dialog" aria-modal="true" aria-labelledby="price-stock-title" onClick={(event) => event.stopPropagation()} onSubmit={savePriceStock}>
+          <header className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h2 id="price-stock-title" className="text-xl font-black">Precio y stock</h2>
+              <p className="mt-1 line-clamp-1 text-sm text-muted">{priceStockProduct.name}</p>
+            </div>
+            <button className="btn-secondary !h-10 !w-10 shrink-0 !rounded-xl !p-0" type="button" onClick={() => setPriceStockProduct(null)} disabled={priceStockBusy} aria-label="Cerrar precio y stock"><X size={18} /></button>
+          </header>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="grid gap-2 text-sm font-bold">Precio
+              <PriceInput value={priceStockDraft.basePrice} onChange={(basePrice) => setPriceStockDraft((current) => ({ ...current, basePrice }))} placeholder="10.000" required />
+            </label>
+            <label className="grid gap-2 text-sm font-bold">Precio en oferta
+              <PriceInput value={priceStockDraft.promoPrice} onChange={(promoPrice) => setPriceStockDraft((current) => ({ ...current, promoPrice }))} placeholder="Opcional" tone="promo" />
+            </label>
+          </div>
+          <div className="grid gap-3">
+            <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm font-bold">
+              <input className="h-5 w-5 accent-brand" type="checkbox" checked={priceStockDraft.stockLimited} onChange={(event) => setPriceStockDraft((current) => ({ ...current, stockLimited: event.target.checked }))} />
+              Controlar stock
+            </label>
+            {priceStockDraft.stockLimited ? <label className="grid gap-2 text-sm font-bold">Unidades disponibles
+              <input className="field" inputMode="numeric" placeholder="10" value={priceStockDraft.stockQuantity} onChange={(event) => setPriceStockDraft((current) => ({ ...current, stockQuantity: formatInteger(event.target.value) }))} />
+            </label> : <p className="text-sm text-muted">Stock ilimitado</p>}
+          </div>
+          {error ? <p className="rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700" role="alert">{error}</p> : null}
+          <div className="flex gap-2 border-t border-line pt-4">
+            <button className="btn-secondary min-h-11 flex-1 !rounded-xl" type="button" onClick={() => setPriceStockProduct(null)} disabled={priceStockBusy}>Cancelar</button>
+            <button className="btn-primary min-h-11 flex-1 !rounded-xl disabled:cursor-not-allowed disabled:opacity-50" type="submit" disabled={priceStockBusy}>
+              <Save size={17} /> {priceStockBusy ? "Guardando…" : "Guardar"}
+            </button>
+          </div>
+        </form>
+      </div> : null}
 
       {isProductModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-end bg-black/50 p-0 backdrop-blur-sm sm:items-center sm:justify-center sm:p-4">
@@ -809,15 +1211,27 @@ export function ProductForm({
                 </div>
               </section>
 
-              <Toggle
-                checked={draft.variantsEnabled}
-                onChange={toggleVariants}
-                label="Variantes"
-                description="Usá propiedades como color o talle para que el cliente elija una opción."
-              />
+              <details className="rounded-2xl border border-line bg-white">
+                <summary className="flex min-h-14 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
+                  <span>
+                    <span className="block text-sm font-black">Opciones de variante</span>
+                    <span className="mt-0.5 block text-xs font-semibold text-muted">Color, talle u otras opciones</span>
+                  </span>
+                  <span className="flex items-center gap-2 text-xs font-bold text-muted">
+                    {draft.optionGroups.length ? `${draft.optionGroups.length} propiedad${draft.optionGroups.length === 1 ? "" : "es"}` : "Opcional"}
+                    <ChevronDown size={17} />
+                  </span>
+                </summary>
+                <div className="grid gap-3 border-t border-line p-3">
+                  <Toggle
+                    checked={draft.variantsEnabled}
+                    onChange={toggleVariants}
+                    label="Usar variantes"
+                    description="Permití que el cliente elija entre opciones del producto."
+                  />
 
-              {draft.variantsEnabled ? (
-                <section className="grid gap-3 rounded-2xl border border-line p-3">
+                  {draft.variantsEnabled ? (
+                    <section className="grid gap-3 rounded-2xl border border-line p-3">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <h3 className="font-black">Propiedades</h3>
@@ -869,8 +1283,10 @@ export function ProductForm({
                   ) : (
                     <p className="rounded-xl bg-surface p-3 text-sm font-bold text-muted">Activaste variantes. Agregá una propiedad como Color o Talle.</p>
                   )}
-                </section>
-              ) : null}
+                    </section>
+                  ) : null}
+                </div>
+              </details>
 
               <Toggle
                 checked={draft.stockLimited}

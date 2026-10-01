@@ -139,6 +139,28 @@ export function makeProductSlug(name: string) {
   return slugify(name) || `producto-${randomUUID().slice(0, 8)}`;
 }
 
+export async function resolveProductCategoryId(
+  supabase: Awaited<ReturnType<typeof getMerchantContext>>["supabase"],
+  storeId: string,
+  categoryId: string | null | undefined,
+  categoryName: string | null | undefined
+) {
+  if (categoryId && categoryId !== "none" && categoryId !== "__new") {
+    const { data } = await supabase.from("categories").select("id").eq("id", categoryId).eq("store_id", storeId).maybeSingle();
+    if (!data) throw new Error("Categoría inválida.");
+    return data.id;
+  }
+
+  const name = categoryName?.trim();
+  if (!name) return null;
+  const slug = makeProductSlug(name);
+  const { data: existing } = await supabase.from("categories").select("id").eq("store_id", storeId).eq("slug", slug).maybeSingle();
+  if (existing) return existing.id;
+  const { data, error } = await supabase.from("categories").insert({ store_id: storeId, name, slug }).select("id").single();
+  if (error || !data) throw new Error("No se pudo crear la categoría.");
+  return data.id;
+}
+
 export function productForClient(product: ProductRow & { category?: unknown; optionGroups?: unknown[] }) {
   return {
     ...product,
