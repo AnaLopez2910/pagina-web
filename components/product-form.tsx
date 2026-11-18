@@ -20,6 +20,7 @@ type ProductOption = {
   name: string;
   priceDelta: number;
   isAvailable: boolean;
+  colorHex: string | null;
 };
 
 type ProductOptionGroup = {
@@ -57,6 +58,7 @@ type OptionDraft = {
   name: string;
   priceDelta: string;
   isAvailable: boolean;
+  colorHex: string;
 };
 
 type GroupDraft = {
@@ -174,7 +176,8 @@ function productToDraft(product: ProductListItem): ProductDraft {
       options: group.options.map((option) => ({
         name: option.name,
         priceDelta: option.priceDelta ? formatInteger(option.priceDelta) : "",
-        isAvailable: option.isAvailable
+        isAvailable: option.isAvailable,
+        colorHex: option.colorHex ?? ""
       }))
     })),
     stockLimited: product.stockQuantity !== null,
@@ -210,7 +213,8 @@ function draftToPayload(draft: ProductDraft) {
               .map((option) => ({
                 name: option.name.trim(),
                 priceDelta: option.priceDelta ? unformatInteger(option.priceDelta) : "0",
-                isAvailable: option.isAvailable
+                isAvailable: option.isAvailable,
+                colorHex: option.colorHex || null
               }))
               .filter((option) => option.name)
           }))
@@ -238,6 +242,36 @@ function stockLabel(product: ProductListItem) {
     return "Sin stock";
   }
   return `Stock: ${product.stockQuantity}`;
+}
+
+// Optional swatch colour for a variant value; empty means the storefront shows the name only.
+function OptionColorPicker({ value, label, onChange }: { value: string; label: string; onChange: (value: string) => void }) {
+  return (
+    <div className="grid w-[76px] gap-1 text-xs font-bold text-muted">
+      Color
+      <div className="flex h-12 items-center gap-1">
+        <label
+          className={`relative grid h-10 w-10 shrink-0 cursor-pointer place-items-center rounded-full ${value ? "border-2 border-white shadow-[0_0_0_1px_#ecd5e2]" : "border-2 border-dashed border-line text-muted"}`}
+          style={value ? { background: value } : undefined}
+          title={value ? "Cambiar color" : "Agregar color"}
+        >
+          {value ? null : <Plus size={14} />}
+          <input
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            type="color"
+            value={value || "#e8a0b4"}
+            onChange={(event) => onChange(event.target.value)}
+            aria-label={`Color de ${label || "este valor"}`}
+          />
+        </label>
+        {value ? (
+          <button className="grid h-7 w-7 place-items-center rounded-full text-muted hover:bg-surface" type="button" onClick={() => onChange("")} aria-label={`Quitar color de ${label || "este valor"}`}>
+            <X size={14} />
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 function PriceInput({
@@ -623,7 +657,7 @@ export function ProductForm({
       ...current,
       optionGroups: current.optionGroups.map((group, currentGroupIndex) =>
         currentGroupIndex === groupIndex
-          ? { ...group, options: [...group.options, { name: "", priceDelta: "", isAvailable: true }] }
+          ? { ...group, options: [...group.options, { name: "", priceDelta: "", isAvailable: true, colorHex: "" }] }
           : group
       )
     }));
@@ -760,7 +794,7 @@ export function ProductForm({
           selectionType: "SINGLE",
           isRequired: true,
           maxSelections: "1",
-          options: values.map((value) => ({ name: value, priceDelta: "", isAvailable: true }))
+          options: values.map((value) => ({ name: value, priceDelta: "", isAvailable: true, colorHex: "" }))
         }
       ]
     }));
@@ -1235,7 +1269,7 @@ export function ProductForm({
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <h3 className="font-black">Propiedades</h3>
-                      <p className="text-sm font-semibold text-muted">Cada propiedad se muestra como una elección obligatoria.</p>
+                      <p className="text-sm font-semibold text-muted">Cada propiedad se muestra como una elección obligatoria. Si le cargás un color a cada valor, la tienda muestra el color en vez del texto solo.</p>
                     </div>
                     <button className="btn-secondary !px-3" type="button" onClick={() => setVariantDrawer({ step: "pick" })}>
                       <Plus size={16} /> Agregar
@@ -1258,16 +1292,21 @@ export function ProductForm({
 
                           <div className="grid gap-2">
                             {group.options.map((option, optionIndex) => (
-                              <div key={optionIndex} className="grid gap-2 sm:grid-cols-[1fr_150px_auto]">
+                              <div key={optionIndex} className="grid grid-cols-[1fr_auto_auto] gap-2 sm:grid-cols-[1fr_150px_auto_auto]">
                                 <label className="grid gap-1 text-xs font-bold text-muted">
                                   Valor
                                   <input className="field !px-3 !py-2" placeholder="Rojo" value={option.name} onChange={(event) => updateOption(groupIndex, optionIndex, { name: event.target.value })} />
                                 </label>
-                                <label className="grid gap-1 text-xs font-bold text-muted">
+                                <label className="col-span-3 grid gap-1 text-xs font-bold text-muted sm:col-span-1">
                                   Precio extra
                                   <PriceInput value={option.priceDelta} onChange={(value) => updateOption(groupIndex, optionIndex, { priceDelta: value })} placeholder="0" />
                                 </label>
-                                <button className="h-12 rounded-xl border border-line px-2 text-red-600 sm:mt-5" type="button" onClick={() => removeOption(groupIndex, optionIndex)} aria-label="Eliminar valor">
+                                <OptionColorPicker
+                                  value={option.colorHex}
+                                  label={option.name}
+                                  onChange={(colorHex) => updateOption(groupIndex, optionIndex, { colorHex })}
+                                />
+                                <button className="mt-5 h-12 rounded-xl border border-line px-2 text-red-600" type="button" onClick={() => removeOption(groupIndex, optionIndex)} aria-label="Eliminar valor">
                                   <Trash2 size={15} />
                                 </button>
                               </div>

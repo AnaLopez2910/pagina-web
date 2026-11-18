@@ -1,4 +1,4 @@
-# Pestañas Ana
+# Amo Store
 
 Tienda única mobile-first para pestañas, maquillaje y accesorios de belleza, con pedidos por WhatsApp.
 

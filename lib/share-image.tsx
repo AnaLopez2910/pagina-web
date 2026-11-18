@@ -37,7 +37,7 @@ export async function renderShareImage() {
     // The card still renders with a useful fallback when the catalog is unavailable.
   }
 
-  const storeName = branding?.name.trim().slice(0, 48) || "Oli Shop";
+  const storeName = branding?.name.trim().slice(0, 48) || "Amo Store";
   const logoDataUrl = await getLogoDataUrl(branding?.logoUrl ?? null);
   const initial = storeName.slice(0, 1).toUpperCase();
 

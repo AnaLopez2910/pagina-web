@@ -72,6 +72,7 @@ export type ProductOptionRow = {
   name: string;
   price_delta: number;
   is_available: boolean;
+  color_hex: string | null;
   sort_order: number;
   created_at: string;
   updated_at: string;

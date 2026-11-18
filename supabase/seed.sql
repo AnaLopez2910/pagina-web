@@ -12,7 +12,7 @@ begin
   end if;
 
   insert into public.stores (owner_id, name, slug, description, whatsapp_phone, hero_title, hero_subtitle)
-  values (seed_owner, 'Pestañas Ana', 'pestanas-ana', 'Pestañas, maquillaje y accesorios para tus rituales de belleza.', '541100000000', 'Brillá a tu manera', 'Tus favoritos de belleza, listos para vos.')
+  values (seed_owner, 'Amo Store', 'amo-store', 'Pestañas, maquillaje y accesorios para tus rituales de belleza.', '541100000000', 'Pestañas, maquillaje y accesorios que vas a amar', 'Elegí tus favoritos y recibilos en tu casa o en un punto de encuentro')
   on conflict (owner_id) do update set name = excluded.name
   returning id into seed_store;
 

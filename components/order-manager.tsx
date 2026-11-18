@@ -19,7 +19,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { useLockBodyScroll } from "@/components/use-lock-body-scroll";
-import { WhatsappIcon } from "@/components/public-store";
+import { WhatsappIcon } from "@/components/whatsapp-icon";
 import { formatBuenosAiresDate } from "@/lib/date-format";
 import { formatMoney } from "@/lib/money";
 import { calculateOrderCost, calculateOrderProfit, isRevenueStatus } from "@/lib/order-financials";

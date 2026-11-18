@@ -18,7 +18,7 @@ export type StorefrontProduct = {
     selectionType: "SINGLE" | "MULTIPLE";
     isRequired: boolean;
     maxSelections: number | null;
-    options: Array<{ id: string; name: string; priceDelta: number; isAvailable: boolean }>;
+    options: Array<{ id: string; name: string; priceDelta: number; isAvailable: boolean; colorHex: string | null }>;
   }>;
 };
 
@@ -77,7 +77,8 @@ function mapProduct(
             id: option.id,
             name: option.name,
             priceDelta: option.price_delta,
-            isAvailable: option.is_available
+            isAvailable: option.is_available,
+            colorHex: option.color_hex ?? null
           }))
       }))
   };
