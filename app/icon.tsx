@@ -10,8 +10,8 @@ export default async function Icon() {
   let logoSrc: string | null = null;
 
   try {
-    const logo = await readFile(path.join(process.cwd(), "public", "logo-sin-fondo-y-letras.png"));
-    logoSrc = `data:image/png;base64,${logo.toString("base64")}`;
+    const logo = await readFile(path.join(process.cwd(), "public", "amo-store-logo.jpg"));
+    logoSrc = `data:image/jpeg;base64,${logo.toString("base64")}`;
   } catch {
     // Keep a usable fallback icon if the public asset is unavailable.
   }
@@ -29,7 +29,7 @@ export default async function Icon() {
           background: "transparent"
         }}
       >
-        {logoSrc ? <img src={logoSrc} alt="" width={84} height={84} style={{ objectFit: "cover" }} /> : <span style={{ color: "#bd6f84", fontSize: 42, fontWeight: 800 }}>A</span>}
+        {logoSrc ? <img src={logoSrc} alt="" width={64} height={64} style={{ objectFit: "cover" }} /> : <span style={{ color: "#9b2752", fontSize: 42, fontWeight: 600 }}>A</span>}
       </div>
     ),
     { ...size }

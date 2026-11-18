@@ -29,7 +29,11 @@ const optionGroupSchema = z.object({
   options: z.array(z.object({
     name: z.string().trim().min(1).max(60),
     priceDelta: z.union([z.number(), z.string()]).default(0),
-    isAvailable: z.boolean().default(true)
+    isAvailable: z.boolean().default(true),
+    colorHex: z.preprocess(
+      (value) => (typeof value === "string" && value.trim() ? value.trim().toLowerCase() : null),
+      z.string().regex(/^#[0-9a-f]{6}$/).nullable()
+    ).default(null)
   })).max(30)
 });
 

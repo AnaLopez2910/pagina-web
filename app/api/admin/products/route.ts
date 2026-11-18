@@ -33,6 +33,8 @@ async function createOptionGroups(supabase: Awaited<ReturnType<typeof getMerchan
       name: option.name.trim(),
       price_delta: parsePriceToCents(String(option.priceDelta)),
       is_available: option.isAvailable,
+      // Only sent when set, so saving keeps working on databases without the colour migration.
+      ...(option.colorHex ? { color_hex: option.colorHex } : {}),
       sort_order: optionIndex
     })));
     if (optionError) throw new Error("No se pudieron guardar las opciones.");

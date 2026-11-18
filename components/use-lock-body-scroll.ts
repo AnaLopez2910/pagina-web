@@ -23,7 +23,9 @@ export function useLockBodyScroll(active: boolean) {
     const currentCount = Number(body.dataset[lockCountKey] ?? "0");
 
     if (currentCount === 0) {
-      body.dataset[scrollYKey] = String(window.scrollY);
+      // Read before fixing the body: once it is fixed, window.scrollY drops to 0.
+      const scrollY = window.scrollY;
+      body.dataset[scrollYKey] = String(scrollY);
       body.dataset[previousOverflowKey] = body.style.overflow;
       body.dataset[previousPositionKey] = body.style.position;
       body.dataset[previousTopKey] = body.style.top;
@@ -31,7 +33,7 @@ export function useLockBodyScroll(active: boolean) {
 
       body.style.overflow = "hidden";
       body.style.position = "fixed";
-      body.style.top = `-${window.scrollY}px`;
+      body.style.top = `-${scrollY}px`;
       body.style.width = "100%";
       emitLockChange(true);
     }

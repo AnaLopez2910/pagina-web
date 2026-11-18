@@ -43,7 +43,7 @@ export async function getAdminProducts(supabase: SupabaseClient<Database>, store
           maxSelections: group.max_selections,
           options: (options as ProductOptionRow[])
             .filter((option) => option.option_group_id === group.id)
-            .map((option) => ({ id: option.id, name: option.name, priceDelta: option.price_delta, isAvailable: option.is_available }))
+            .map((option) => ({ id: option.id, name: option.name, priceDelta: option.price_delta, isAvailable: option.is_available, colorHex: option.color_hex ?? null }))
         }))
     };
   });

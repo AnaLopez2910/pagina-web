@@ -10,8 +10,8 @@ const playfair = Playfair_Display({ subsets: ["latin"], variable: "--font-displa
 
 export const metadata: Metadata = {
     title: {
-    default: "Oli Shop - Cátalogo",
-    template: "%s | Oli Shop"
+    default: "Amo Store | Catálogo",
+    template: "%s | Amo Store"
   },
   description: "Pestañas, maquillaje y accesorios de belleza. Elegí tus favoritos y pedí por WhatsApp.",
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000")
