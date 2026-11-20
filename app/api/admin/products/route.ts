@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 
 import {
-  makeProductSlug,
   normalizeImagePaths,
   normalizePromoPrice,
   normalizePurchasePrice,
@@ -14,6 +13,7 @@ import {
 import { getAdminProducts } from "@/lib/admin-data";
 import { getMerchantContext } from "@/lib/merchant";
 import { parsePriceToCents } from "@/lib/money";
+import { buildProductSlug, createProductCode } from "@/lib/product-url";
 
 async function createOptionGroups(supabase: Awaited<ReturnType<typeof getMerchantContext>>["supabase"], productId: string, groups: ReturnType<typeof productSchema.parse>["optionGroups"]) {
   for (const [groupIndex, group] of groups.entries()) {
@@ -72,9 +72,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Datos inválidos" }, { status: 400 });
   }
 
-  const baseSlug = makeProductSlug(result.data.name);
-  const { data: collision } = await supabase.from("products").select("id").eq("store_id", store.id).eq("slug", baseSlug).maybeSingle();
-  const slug = collision ? `${baseSlug}-${Date.now().toString(36)}` : baseSlug;
   // New products go to the end of the manual order.
   const { data: lastProduct } = await supabase.from("products").select("sort_order").eq("store_id", store.id).order("sort_order", { ascending: false }).limit(1).maybeSingle();
   const sortOrder = (lastProduct?.sort_order ?? -1) + 1;
@@ -82,11 +79,10 @@ export async function POST(request: Request) {
   try {
     uploadedImages = parsedRequest.imageFiles.length ? await uploadProductImages(store.id, parsedRequest.imageFiles) : [];
     const imagePaths = [...normalizeImagePaths(result.data, store.id), ...uploadedImages].slice(0, 6);
-    const { data: product, error } = await supabase.from("products").insert({
+    const row = {
       store_id: store.id,
       category_id: categoryId,
       name: result.data.name.trim(),
-      slug,
       description: result.data.description?.trim() || null,
       base_price: basePrice,
       promo_price: promoPrice,
@@ -95,7 +91,12 @@ export async function POST(request: Request) {
       is_visible: result.data.isVisible,
       stock_quantity: result.data.stockQuantity,
       sort_order: sortOrder
-    }).select("id").single();
+    };
+    // The code makes each slug unique; a clash is so unlikely that one fresh code settles it.
+    let { data: product, error } = await supabase.from("products").insert({ ...row, slug: buildProductSlug(row.name, createProductCode()) }).select("id").single();
+    for (let attempt = 0; error?.code === "23505" && attempt < 3; attempt += 1) {
+      ({ data: product, error } = await supabase.from("products").insert({ ...row, slug: buildProductSlug(row.name, createProductCode()) }).select("id").single());
+    }
     if (error || !product) throw new Error("No se pudo guardar el producto.");
     await createOptionGroups(supabase, product.id, result.data.optionGroups);
     const products = await getAdminProducts(supabase, store.id);

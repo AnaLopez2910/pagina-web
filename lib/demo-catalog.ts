@@ -1,4 +1,5 @@
 import type { PublicStore, StorefrontProduct } from "@/lib/catalog-data";
+import { slugify } from "@/lib/slug";
 
 // Sample catalog used only by /demo to preview the storefront without a Supabase project.
 
@@ -23,7 +24,8 @@ let demoProductCount = 0;
 function product(input: Omit<StorefrontProduct, "slug" | "stockQuantity" | "promoPrice" | "optionGroups" | "sortOrder" | "createdAt"> & Partial<Pick<StorefrontProduct, "stockQuantity" | "promoPrice" | "optionGroups">>): StorefrontProduct {
   const position = demoProductCount++;
   return {
-    slug: input.id,
+    // Same shape as real slugs: name plus a short code.
+    slug: `${slugify(input.name)}-dm${100 + position}`,
     stockQuantity: null,
     promoPrice: null,
     optionGroups: [],

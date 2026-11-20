@@ -1,6 +1,7 @@
 import type { MetadataRoute } from "next";
 
 import { getPublicStore } from "@/lib/catalog-data";
+import { productPath } from "@/lib/product-url";
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const baseUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
@@ -9,7 +10,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     if (!catalog) return [{ url: baseUrl, lastModified: new Date() }];
     return [
       { url: baseUrl, lastModified: new Date() },
-      ...catalog.products.map((product) => ({ url: `${baseUrl}/${catalog.store.slug}/product/${product.slug}`, lastModified: new Date() }))
+      ...catalog.products.map((product) => ({ url: `${baseUrl}${productPath(product.slug)}`, lastModified: new Date() }))
     ];
   } catch {
     return [{ url: baseUrl, lastModified: new Date() }];
