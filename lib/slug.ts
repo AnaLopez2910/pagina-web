@@ -17,5 +17,8 @@ export const reservedSlugs = new Set([
   "onboarding",
   "pricing",
   "mockups",
+  "product",
+  "gestion",
+  "demo",
   "_next"
 ]);

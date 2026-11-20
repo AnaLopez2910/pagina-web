@@ -1,7 +1,10 @@
+import { cache } from "react";
+
 import { createClient } from "@/lib/supabase/server";
 import type { CategoryRow, OptionGroupRow, ProductOptionRow, ProductRow, StoreRow } from "@/types/database";
 import { getPublicImageUrl } from "@/lib/storage";
 import { normalizeProductSort, orderProducts } from "@/lib/product-order";
+import { findProductBySlug } from "@/lib/product-url";
 
 export type StorefrontProduct = {
   id: string;
@@ -91,7 +94,8 @@ function mapProduct(
   };
 }
 
-export async function getPublicStore(slug?: string) {
+// Cached per request: a product page reads the catalog for its metadata, its share image and its body.
+export const getPublicStore = cache(async (slug?: string) => {
   const supabase = await createClient();
   // "*" instead of a column list keeps the catalog working before a new store column is migrated.
   let query = supabase.from("stores").select("*").eq("is_published", true);
@@ -130,7 +134,7 @@ export async function getPublicStore(slug?: string) {
     products: orderedProducts,
     availability: getStoreAvailability({ restrictBySchedule: store.restrict_by_schedule, businessHours: store.business_hours })
   };
-}
+});
 
 export async function getPublicStoreBranding(): Promise<PublicStoreBranding | null> {
   const supabase = await createClient();
@@ -176,10 +180,9 @@ function mapStore(store: StoreRow, categories: CategoryRow[]): PublicStore {
   };
 }
 
-export async function getPublicProduct(storeSlug: string, productSlug: string) {
-  const catalog = await getPublicStore(storeSlug);
-  if (!catalog) {
-    return null;
-  }
-  return catalog.products.find((product) => product.slug === productSlug) ?? null;
+export async function getPublicProduct(productSlug: string) {
+  const catalog = await getPublicStore();
+  if (!catalog) return null;
+  const product = findProductBySlug(catalog.products, productSlug);
+  return product ? { catalog, product } : null;
 }

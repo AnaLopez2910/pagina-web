@@ -12,5 +12,5 @@ export const metadata: Metadata = {
 // Local preview with sample products, for working on the storefront without a Supabase project.
 export default function StorefrontDemoPage() {
   if (process.env.NODE_ENV === "production") notFound();
-  return <PublicStore store={demoStore} products={demoProducts} preview />;
+  return <PublicStore store={demoStore} products={demoProducts} basePath="/demo" preview />;
 }

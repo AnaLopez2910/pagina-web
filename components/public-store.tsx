@@ -3,14 +3,18 @@
 
 import "@/app/storefront.css";
 
-import { ArrowLeft, ArrowUpDown, Check, ChevronLeft, ChevronRight, ImageIcon, MapPin, Maximize2, Minus, Plus, Search, ShoppingCart, Trash2, Truck, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { ArrowLeft, ArrowUpDown, Check, ChevronLeft, ChevronRight, ImageIcon, MapPin, Maximize2, Minus, Plus, Search, Share2, ShoppingCart, Trash2, Truck, X } from "lucide-react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 
 import { SectionTitle, StorefrontLayout, type CatalogCopy, type StorefrontView } from "@/components/storefront-layout";
 import { useLockBodyScroll } from "@/components/use-lock-body-scroll";
 import { WhatsappIcon } from "@/components/whatsapp-icon";
+import { useStoredCart, type CartItem } from "@/lib/cart-storage";
 import { getDiscountPercent, getEffectiveProductPrice } from "@/lib/catalog";
 import { orderProducts, SHOPPER_SORT_LABELS, SHOPPER_SORTS, type ShopperSort } from "@/lib/product-order";
+import { productPath } from "@/lib/product-url";
 import type { PublicStore, StorefrontProduct } from "@/lib/catalog-data";
 import { formatMoney } from "@/lib/money";
 import { formatArgentineLocalPhone, isCompleteArgentineLocalPhone, isValidCustomerName } from "@/lib/store-settings";
@@ -19,17 +23,11 @@ import { storefrontFontClasses } from "@/lib/storefront-fonts";
 const FALLBACK_HERO_IMAGE = "https://images.unsplash.com/photo-1596462502278-27bfdc403348?auto=format&fit=crop&w=1600&q=88";
 const LOW_STOCK_THRESHOLD = 5;
 const PUBLIC_PRODUCT_BATCH_SIZE = 25;
+const RELATED_PRODUCT_COUNT = 4;
 
-type CartItem = {
-  lineId: string;
-  productId: string;
-  productName: string;
-  imageUrl: string | null;
-  quantity: number;
-  selectedOptionIds: string[];
-  optionLabels: string[];
-  unitPrice: number;
-};
+// Becomes true once any store page has mounted in this tab. A product page that mounts
+// after that was reached from inside the store, so its "Volver" can simply go back.
+let storeVisited = false;
 
 function calculateUnitPrice(product: StorefrontProduct, selectedOptionIds: string[]) {
   const selected = new Set(selectedOptionIds);
@@ -38,6 +36,21 @@ function calculateUnitPrice(product: StorefrontProduct, selectedOptionIds: strin
 
 function optionSelectionKey(optionIds: string[]) {
   return JSON.stringify([...optionIds].sort());
+}
+
+// A saved cart can outlive a product, an option or a price: keep what still exists, at today's price.
+function reconcileCart(items: CartItem[], products: StorefrontProduct[]) {
+  return items.flatMap((item) => {
+    const product = products.find((candidate) => candidate.id === item.productId);
+    if (!product || product.stockQuantity === 0) return [];
+    const availableOptionIds = new Set(product.optionGroups.flatMap((group) => group.options.filter((option) => option.isAvailable).map((option) => option.id)));
+    if (!item.selectedOptionIds.every((id) => availableOptionIds.has(id))) return [];
+    return [{ ...item, productName: product.name, imageUrl: product.imageUrls[0] ?? null, unitPrice: calculateUnitPrice(product, item.selectedOptionIds) }];
+  });
+}
+
+function normalizeShopperSort(value: string | null): ShopperSort {
+  return SHOPPER_SORTS.find((sort) => sort === value) ?? "recommended";
 }
 
 function pluralizeOptionName(name: string) {
@@ -71,24 +84,42 @@ function whatsappHref(phone: string) {
   return normalized ? `https://wa.me/${normalized}` : "#";
 }
 
-export function PublicStore({ store, products, preview = false }: { store: PublicStore; products: StorefrontProduct[]; preview?: boolean }) {
-  const [query, setQuery] = useState("");
-  const [category, setCategory] = useState("all");
+type PublicStoreProps = {
+  store: PublicStore;
+  products: StorefrontProduct[];
+  // Set on a product page: the page shows this product instead of the catalog.
+  product?: StorefrontProduct | null;
+  productUrl?: string | null;
+  // "/demo" for the local preview, so links stay inside it.
+  basePath?: string;
+  preview?: boolean;
+};
+
+export function PublicStore({ store, products, product: pageProduct = null, productUrl = null, basePath = "", preview = false }: PublicStoreProps) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const homeHref = basePath || "/";
+  // Catalog filters start from the URL, so going back from a product returns to the same view.
+  const [query, setQuery] = useState(() => searchParams.get("q") ?? "");
+  const [category, setCategory] = useState(() => {
+    const value = searchParams.get("categoria");
+    return value === "promos" || store.categories.some((item) => item.slug === value) ? value as string : "all";
+  });
   const [visibleProductLimit, setVisibleProductLimit] = useState(PUBLIC_PRODUCT_BATCH_SIZE);
   const [productLimitRestored, setProductLimitRestored] = useState(false);
   const [heroIndex, setHeroIndex] = useState(0);
   const [heroPaused, setHeroPaused] = useState(false);
-  const [activeProduct, setActiveProduct] = useState<StorefrontProduct | null>(null);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [quantity, setQuantity] = useState(1);
   const [justAddedId, setJustAddedId] = useState<string | null>(null);
   const justAddedTimer = useRef<number | undefined>(undefined);
   const [selectedOptionIds, setSelectedOptionIds] = useState<string[]>([]);
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const [storedCart, setStoredCart] = useStoredCart(`catalog:${store.slug}:cart`);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [checkoutStep, setCheckoutStep] = useState<1 | 2>(1);
-  const [shopperSort, setShopperSort] = useState<ShopperSort>("recommended");
+  const [shopperSort, setShopperSort] = useState<ShopperSort>(() => normalizeShopperSort(searchParams.get("orden")));
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const queryUrlTimer = useRef<number | undefined>(undefined);
   const photoTouchStart = useRef<number | null>(null);
   const photoSwiped = useRef(false);
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -96,13 +127,16 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
   const [viewerZoom, setViewerZoom] = useState<{ x: number; y: number } | null>(null);
   const viewerPointer = useRef<{ x: number; y: number } | null>(null);
   const viewerLastTap = useRef(0);
+  const [shareCopied, setShareCopied] = useState(false);
+  const shareCopiedTimer = useRef<number | undefined>(undefined);
+  const cameFromStore = useRef<boolean | null>(null);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [deliveryType, setDeliveryType] = useState("Punto de encuentro");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [magicVisible, setMagicVisible] = useState(false);
-  const modalErrorRef = useRef<HTMLParagraphElement>(null);
+  const productErrorRef = useRef<HTMLParagraphElement>(null);
   const cartErrorRef = useRef<HTMLParagraphElement>(null);
 
   const heroImages = useMemo(() => store.heroImageUrls.length ? store.heroImageUrls : [FALLBACK_HERO_IMAGE], [store.heroImageUrls]);
@@ -129,15 +163,78 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
     () => shopperSort === "recommended" ? filteredProducts : orderProducts(filteredProducts, shopperSort, { soldOutLast: store.soldOutLast }),
     [filteredProducts, shopperSort, store.soldOutLast]
   );
+  // Same category first, then the rest of the catalog in the store's order.
+  const relatedProducts = useMemo(() => {
+    if (!pageProduct) return [];
+    const others = products.filter((product) => product.id !== pageProduct.id);
+    const sameCategory = others.filter((product) => pageProduct.category && product.category?.id === pageProduct.category.id);
+    return [...sameCategory, ...others.filter((product) => !sameCategory.includes(product))].slice(0, RELATED_PRODUCT_COUNT);
+  }, [pageProduct, products]);
   const visibleProductLimitKey = `catalog:${store.slug}:visible-products`;
   const visibleProducts = sortedProducts.slice(0, visibleProductLimit);
   const remainingProductCount = Math.max(0, sortedProducts.length - visibleProducts.length);
+  const cart = useMemo(() => reconcileCart(storedCart, products), [products, storedCart]);
   const cartTotal = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
   const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
   // An emptied cart can't stay on the details step.
   const currentCheckoutStep = cart.length ? checkoutStep : 1;
 
-  useLockBodyScroll(Boolean(activeProduct) || checkoutOpen || magicVisible || sortMenuOpen);
+  useLockBodyScroll(checkoutOpen || magicVisible || sortMenuOpen || viewerOpen);
+
+  // Layers stacked over the page, bottom to top. Each one gets its own history entry,
+  // so the phone's back button closes the top layer instead of leaving the page.
+  const openLayers = [
+    checkoutOpen && "cart",
+    checkoutOpen && currentCheckoutStep === 2 && "checkout-details",
+    sortMenuOpen && "sort",
+    viewerOpen && "viewer"
+  ].filter((layer): layer is string => Boolean(layer));
+  const layerDepth = openLayers.length;
+  const historyLayers = useRef(0);
+  // A filter changed while a layer was open waits until that layer's history entry is gone.
+  const pendingCatalogUrl = useRef<string | null>(null);
+
+  useEffect(() => {
+    const pushed = historyLayers.current;
+    for (let layer = pushed + 1; layer <= layerDepth; layer += 1) window.history.pushState({ storeLayer: layer }, "");
+    // Closed with a button or Escape: drop the entries it left behind.
+    if (layerDepth < pushed) window.history.go(layerDepth - pushed);
+    historyLayers.current = layerDepth;
+  }, [layerDepth]);
+
+  const handlePopState = useEffectEvent((event: PopStateEvent) => {
+    const layer = typeof event.state?.storeLayer === "number" ? event.state.storeLayer : 0;
+    // Forward into a layer that is already closed: step back to where the page really is.
+    if (layer > openLayers.length) {
+      window.history.go(openLayers.length - layer);
+      return;
+    }
+    historyLayers.current = layer;
+    const closing = openLayers.slice(layer);
+    if (closing.includes("viewer")) closeViewer();
+    if (closing.includes("sort")) setSortMenuOpen(false);
+    if (closing.includes("checkout-details")) setCheckoutStep(1);
+    if (closing.includes("cart")) setCheckoutOpen(false);
+    if (layer === 0 && pendingCatalogUrl.current) {
+      window.history.replaceState(null, "", pendingCatalogUrl.current);
+      pendingCatalogUrl.current = null;
+    }
+  });
+
+  // Registered once: Next re-renders the page while handling the same popstate event, and a
+  // listener swapped out by that render would miss the event.
+  useEffect(() => {
+    function listener(event: PopStateEvent) {
+      handlePopState(event);
+    }
+    window.addEventListener("popstate", listener);
+    return () => window.removeEventListener("popstate", listener);
+  }, []);
+
+  useEffect(() => {
+    cameFromStore.current ??= storeVisited;
+    storeVisited = true;
+  }, []);
 
   useEffect(() => {
     let restoredLimit = PUBLIC_PRODUCT_BATCH_SIZE;
@@ -162,26 +259,29 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
     }
   }, [productLimitRestored, visibleProductLimit, visibleProductLimitKey]);
 
-  useEffect(() => () => window.clearTimeout(justAddedTimer.current), []);
+  useEffect(() => () => {
+    window.clearTimeout(justAddedTimer.current);
+    window.clearTimeout(shareCopiedTimer.current);
+    window.clearTimeout(queryUrlTimer.current);
+  }, []);
 
   useEffect(() => {
-    if (heroImages.length < 2 || heroPaused) return;
+    if (heroImages.length < 2 || heroPaused || pageProduct) return;
     const interval = window.setInterval(() => setHeroIndex((current) => (current + 1) % heroImages.length), 5000);
     return () => window.clearInterval(interval);
-  }, [heroImages.length, heroPaused]);
+  }, [heroImages.length, heroPaused, pageProduct]);
 
   useEffect(() => {
-    if (!activeProduct && !checkoutOpen && !sortMenuOpen) return;
+    if (!checkoutOpen && !sortMenuOpen && !viewerOpen) return;
     function handleKeyDown(event: KeyboardEvent) {
-      // The photo viewer sits on top of the product: Escape closes only the viewer and arrows move between photos.
-      if (viewerOpen && activeProduct) {
+      // The photo viewer sits on top of everything: Escape closes only the viewer and arrows move between photos.
+      if (viewerOpen && pageProduct) {
         if (event.key === "Escape") closeViewer();
         else if (event.key === "ArrowRight") showViewerImage(activeImageIndex + 1);
         else if (event.key === "ArrowLeft") showViewerImage(activeImageIndex - 1);
         return;
       }
       if (event.key !== "Escape") return;
-      setActiveProduct(null);
       setCheckoutOpen(false);
       setSortMenuOpen(false);
     }
@@ -190,20 +290,24 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
   });
 
   useEffect(() => {
-    if (!activeProduct || !error) return;
+    if (!pageProduct || checkoutOpen || !error) return;
     const frame = window.requestAnimationFrame(() => {
-      modalErrorRef.current?.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+      productErrorRef.current?.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeProduct, error]);
+  }, [pageProduct, checkoutOpen, error]);
 
   useEffect(() => {
-    if (!checkoutOpen || activeProduct || !error) return;
+    if (!checkoutOpen || !error) return;
     const frame = window.requestAnimationFrame(() => {
       cartErrorRef.current?.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeProduct, checkoutOpen, error]);
+  }, [checkoutOpen, error]);
+
+  function setCart(update: (current: CartItem[]) => CartItem[]) {
+    setStoredCart((current) => update(reconcileCart(current, products)));
+  }
 
   function scrollCheckoutFieldIntoView(event: FocusEvent<HTMLInputElement>) {
     const field = event.currentTarget;
@@ -232,16 +336,6 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
       }
       return [...current, optionId];
     });
-  }
-
-  function openProduct(product: StorefrontProduct) {
-    setActiveProduct(product);
-    setActiveImageIndex(0);
-    setViewerOpen(false);
-    setViewerZoom(null);
-    setSelectedOptionIds([]);
-    setQuantity(1);
-    setError("");
   }
 
   function addProductToCart(product: StorefrontProduct, optionIds: string[], amount = 1) {
@@ -291,28 +385,33 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
     return true;
   }
 
-  function addActiveProduct() {
-    if (!activeProduct || !addProductToCart(activeProduct, selectedOptionIds, quantity)) return;
-    setActiveProduct(null);
-    setSelectedOptionIds([]);
+  function flashAdded(productId: string) {
+    setJustAddedId(productId);
+    window.clearTimeout(justAddedTimer.current);
+    justAddedTimer.current = window.setTimeout(() => setJustAddedId(null), 1400);
+  }
+
+  function addPageProduct() {
+    if (!pageProduct || !addProductToCart(pageProduct, selectedOptionIds, quantity)) return;
+    setQuantity(1);
+    flashAdded(pageProduct.id);
   }
 
   function changeQuantity(delta: number) {
-    if (!activeProduct) return;
-    const remaining = remainingStock(activeProduct);
+    if (!pageProduct) return;
+    const remaining = remainingStock(pageProduct);
     const max = remaining === null ? 99 : Math.max(1, remaining);
     setQuantity((current) => Math.min(max, Math.max(1, current + delta)));
   }
 
   function addCardProduct(product: StorefrontProduct) {
     if (product.optionGroups.length) {
-      openProduct(product);
+      saveCatalogUrl();
+      router.push(productPath(product.slug, basePath));
       return;
     }
     if (!addProductToCart(product, [])) return;
-    setJustAddedId(product.id);
-    window.clearTimeout(justAddedTimer.current);
-    justAddedTimer.current = window.setTimeout(() => setJustAddedId(null), 1400);
+    flashAdded(product.id);
   }
 
   function updateQuantity(lineId: string, delta: number) {
@@ -330,21 +429,49 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
     }).filter((item) => item.quantity > 0));
   }
 
+  // Filters live in the URL, so a filtered view survives going to a product and back, and can be shared.
+  function updateCatalogUrl(changes: Record<string, string | null>) {
+    const url = new URL(pendingCatalogUrl.current ?? window.location.href, window.location.origin);
+    for (const [key, value] of Object.entries(changes)) {
+      if (value) url.searchParams.set(key, value);
+      else url.searchParams.delete(key);
+    }
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    // With a layer open the current history entry is the layer's, which is about to be dropped.
+    if (historyLayers.current > 0) pendingCatalogUrl.current = next;
+    else window.history.replaceState(null, "", next);
+  }
+
+  // The search box writes to the URL after a pause; leaving for a product writes it right away.
+  function saveCatalogUrl() {
+    if (queryUrlTimer.current === undefined) return;
+    window.clearTimeout(queryUrlTimer.current);
+    queryUrlTimer.current = undefined;
+    updateCatalogUrl({ q: query.trim() || null });
+  }
+
   function selectCategory(nextCategory: string) {
     setCategory(nextCategory);
     setVisibleProductLimit(PUBLIC_PRODUCT_BATCH_SIZE);
+    updateCatalogUrl({ categoria: nextCategory === "all" ? null : nextCategory });
     window.setTimeout(() => document.getElementById("productos")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
 
   function updateProductQuery(nextQuery: string) {
     setQuery(nextQuery);
     setVisibleProductLimit(PUBLIC_PRODUCT_BATCH_SIZE);
+    window.clearTimeout(queryUrlTimer.current);
+    queryUrlTimer.current = window.setTimeout(() => {
+      queryUrlTimer.current = undefined;
+      updateCatalogUrl({ q: nextQuery.trim() || null });
+    }, 400);
   }
 
   function chooseShopperSort(nextSort: ShopperSort) {
     setShopperSort(nextSort);
     setSortMenuOpen(false);
     setVisibleProductLimit(PUBLIC_PRODUCT_BATCH_SIZE);
+    updateCatalogUrl({ orden: nextSort === "recommended" ? null : nextSort });
   }
 
   function openCart() {
@@ -353,14 +480,42 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
     setCheckoutOpen(true);
   }
 
+  // Coming from the catalog, "Volver" returns to it where the shopper left off; from a shared link it opens the catalog.
+  function goBackToStore(event: ReactMouseEvent<HTMLAnchorElement>) {
+    if (!cameFromStore.current || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    router.back();
+  }
+
+  async function shareProduct() {
+    if (!pageProduct) return;
+    const url = productUrl ?? window.location.href;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: pageProduct.name, text: `${pageProduct.name} · ${formatMoney(getEffectiveProductPrice(pageProduct))}`, url });
+      } catch {
+        // The shopper closed the share sheet.
+      }
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setShareCopied(true);
+      window.clearTimeout(shareCopiedTimer.current);
+      shareCopiedTimer.current = window.setTimeout(() => setShareCopied(false), 2200);
+    } catch {
+      window.prompt("Copiá el link del producto", url);
+    }
+  }
+
   function showProductImage(index: number) {
-    if (!activeProduct?.imageUrls.length) return;
-    const count = activeProduct.imageUrls.length;
+    if (!pageProduct?.imageUrls.length) return;
+    const count = pageProduct.imageUrls.length;
     setActiveImageIndex((index + count) % count);
   }
 
   function openViewer() {
-    if (!activeProduct?.imageUrls.length) return;
+    if (!pageProduct?.imageUrls.length) return;
     setViewerZoom(null);
     setViewerOpen(true);
   }
@@ -460,11 +615,55 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
       setError(data?.error ?? "No se pudo crear el pedido.");
       return;
     }
+    // The cart is saved on the device: empty it so coming back from WhatsApp doesn't offer the same order again.
+    setCart(() => []);
     setMagicVisible(true);
     window.setTimeout(() => { window.location.href = data.whatsappUrl; }, 2100);
   }
 
   const publicWhatsapp = whatsappHref(store.whatsappPhone);
+
+  function renderProductCard(product: StorefrontProduct) {
+    const href = productPath(product.slug, basePath);
+    const outOfStock = isOutOfStock(product);
+    const remaining = remainingStock(product);
+    const discount = getDiscountPercent(product);
+    const lowStock = !outOfStock && remaining !== null && remaining <= LOW_STOCK_THRESHOLD;
+    const justAdded = justAddedId === product.id;
+    const hint = optionHint(product);
+    const addLabel = justAdded ? "Agregado" : product.optionGroups.length ? "Elegir opciones" : "Agregar al carrito";
+    return (
+      <article className={`mn-card ${outOfStock ? "is-out" : ""}`} key={product.id}>
+        <div className="mn-card-media">
+          {/* The photo opens the product too; the name below is the focusable link */}
+          <Link className="mn-card-photo" href={href} onClick={saveCatalogUrl} tabIndex={-1} aria-hidden="true">
+            {product.imageUrls[0] ? <img src={product.imageUrls[0]} alt="" loading="lazy" /> : <ImageIcon size={28} aria-hidden="true" />}
+          </Link>
+          {discount || lowStock || outOfStock ? (
+            <span className="mn-card-stickers">
+              {discount && !outOfStock ? <span className="mn-sticker">-{discount}%</span> : null}
+              {lowStock ? <span className="mn-sticker soft">{remaining === 1 ? "Queda 1" : `Quedan ${remaining}`}</span> : null}
+              {outOfStock ? <span className="mn-sticker muted">Sin stock</span> : null}
+            </span>
+          ) : null}
+          {!outOfStock ? (
+            <button className={`mn-card-add ${justAdded ? "is-added" : ""}`} onClick={() => addCardProduct(product)} aria-label={`${addLabel}: ${product.name}`} type="button">
+              {justAdded ? <Check size={20} strokeWidth={2.5} aria-hidden="true" /> : <Plus size={20} strokeWidth={2.5} aria-hidden="true" />}
+            </button>
+          ) : null}
+        </div>
+        <Link className="mn-card-info" href={href} onClick={saveCatalogUrl}>
+          <span className="mn-card-cat">{product.category?.name ?? "Producto"}</span>
+          <span className="mn-card-name">{product.name}</span>
+          <span className="mn-card-meta">
+            <span className="mn-price-tag">{formatMoney(getEffectiveProductPrice(product))}</span>
+            {discount ? <s>{formatMoney(product.basePrice)}</s> : null}
+            {hint ? <span className="mn-card-hint">{hint}</span> : null}
+          </span>
+        </Link>
+      </article>
+    );
+  }
 
   function renderCatalog(copy: CatalogCopy) {
     return (
@@ -506,46 +705,7 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
           </div>
 
           <div className={`product-grid mobile-cols-${store.mobileProductColumns}`}>
-            {visibleProducts.map((product) => {
-              const outOfStock = isOutOfStock(product);
-              const remaining = remainingStock(product);
-              const discount = getDiscountPercent(product);
-              const lowStock = !outOfStock && remaining !== null && remaining <= LOW_STOCK_THRESHOLD;
-              const justAdded = justAddedId === product.id;
-              const hint = optionHint(product);
-              const addLabel = justAdded ? "Agregado" : product.optionGroups.length ? "Elegir opciones" : "Agregar al carrito";
-              return (
-                <article className={`mn-card ${outOfStock ? "is-out" : ""}`} key={product.id}>
-                  <div className="mn-card-media">
-                    {/* The photo opens the product too; the name below is the focusable control */}
-                    <button className="mn-card-photo" onClick={() => openProduct(product)} tabIndex={-1} aria-hidden="true" type="button">
-                      {product.imageUrls[0] ? <img src={product.imageUrls[0]} alt="" loading="lazy" /> : <ImageIcon size={28} aria-hidden="true" />}
-                    </button>
-                    {discount || lowStock || outOfStock ? (
-                      <span className="mn-card-stickers">
-                        {discount && !outOfStock ? <span className="mn-sticker">-{discount}%</span> : null}
-                        {lowStock ? <span className="mn-sticker soft">{remaining === 1 ? "Queda 1" : `Quedan ${remaining}`}</span> : null}
-                        {outOfStock ? <span className="mn-sticker muted">Sin stock</span> : null}
-                      </span>
-                    ) : null}
-                    {!outOfStock ? (
-                      <button className={`mn-card-add ${justAdded ? "is-added" : ""}`} onClick={() => addCardProduct(product)} aria-label={`${addLabel}: ${product.name}`} type="button">
-                        {justAdded ? <Check size={20} strokeWidth={2.5} aria-hidden="true" /> : <Plus size={20} strokeWidth={2.5} aria-hidden="true" />}
-                      </button>
-                    ) : null}
-                  </div>
-                  <button className="mn-card-info" onClick={() => openProduct(product)} type="button">
-                    <span className="mn-card-cat">{product.category?.name ?? "Producto"}</span>
-                    <span className="mn-card-name">{product.name}</span>
-                    <span className="mn-card-meta">
-                      <span className="mn-price-tag">{formatMoney(getEffectiveProductPrice(product))}</span>
-                      {discount ? <s>{formatMoney(product.basePrice)}</s> : null}
-                      {hint ? <span className="mn-card-hint">{hint}</span> : null}
-                    </span>
-                  </button>
-                </article>
-              );
-            })}
+            {visibleProducts.map(renderProductCard)}
           </div>
           {!sortedProducts.length ? <div className="empty-state">No encontramos productos con esos filtros.</div> : null}
           {sortedProducts.length ? (
@@ -556,6 +716,146 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
           ) : null}
         </div>
       </section>
+    );
+  }
+
+  function renderProductPage() {
+    if (!pageProduct) return null;
+    const item = pageProduct;
+    const images = item.imageUrls;
+    const outOfStock = isOutOfStock(item);
+    const remaining = remainingStock(item);
+    const discount = getDiscountPercent(item);
+    const added = justAddedId === item.id;
+    const consultHref = store.whatsappPhone ? `${publicWhatsapp}?text=${encodeURIComponent(`¡Hola! Quiero consultar por ${item.name}${productUrl ? `: ${productUrl}` : ""}`)}` : null;
+    return (
+      <>
+        <div className="container mn-pdp-page">
+          <nav className="mn-crumbs" aria-label="Estás en">
+            <Link className="mn-crumbs-back" href={homeHref} onClick={goBackToStore}><ArrowLeft size={17} aria-hidden="true" /> Volver</Link>
+            <ol>
+              <li><Link href={homeHref}>Inicio</Link></li>
+              {item.category ? <li><Link href={`${homeHref}?categoria=${item.category.slug}#productos`}>{item.category.name}</Link></li> : null}
+              <li aria-current="page">{item.name}</li>
+            </ol>
+          </nav>
+
+          <div className="mn-pdp">
+            <div className="mn-pdp-media">
+              <div
+                className={`mn-pdp-photo ${images.length ? "can-expand" : ""}`}
+                onClick={(event) => {
+                  if (photoSwiped.current || event.target !== event.currentTarget && !(event.target instanceof HTMLImageElement)) return;
+                  openViewer();
+                }}
+                onTouchStart={(event) => { photoTouchStart.current = event.touches[0]?.clientX ?? null; photoSwiped.current = false; }}
+                onTouchEnd={(event) => {
+                  const start = photoTouchStart.current;
+                  const end = event.changedTouches[0]?.clientX;
+                  photoTouchStart.current = null;
+                  if (start === null || end === undefined || Math.abs(end - start) < 40) return;
+                  photoSwiped.current = true;
+                  showProductImage(activeImageIndex + (end < start ? 1 : -1));
+                }}
+              >
+                {images.length ? <img src={images[activeImageIndex] ?? images[0]} alt={`${item.name}, foto ${activeImageIndex + 1}`} /> : <ImageIcon size={40} aria-hidden="true" />}
+                {discount && !outOfStock ? <span className="mn-pdp-badge">-{discount}%</span> : null}
+                {images.length ? <button className="mn-pdp-expand" onClick={openViewer} type="button"><Maximize2 size={15} aria-hidden="true" /> Ver completa</button> : null}
+                {images.length > 1 ? <>
+                  <button className="mn-pdp-arrow is-prev" onClick={() => showProductImage(activeImageIndex - 1)} aria-label="Foto anterior" type="button"><ChevronLeft size={20} /></button>
+                  <button className="mn-pdp-arrow is-next" onClick={() => showProductImage(activeImageIndex + 1)} aria-label="Foto siguiente" type="button"><ChevronRight size={20} /></button>
+                  <span className="mn-pdp-counter" aria-hidden="true">{activeImageIndex + 1} / {images.length}</span>
+                </> : null}
+              </div>
+              {images.length > 1 ? (
+                <div className="mn-thumbs" role="group" aria-label="Fotos del producto">
+                  {images.map((url, index) => (
+                    <button key={`${url}-${index}`} className={index === activeImageIndex ? "is-on" : ""} onClick={() => setActiveImageIndex(index)} aria-label={`Ver foto ${index + 1}`} aria-pressed={index === activeImageIndex} type="button">
+                      <img src={url} alt="" loading="lazy" />
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="mn-pdp-info">
+              <span className="mn-pdp-cat">{item.category?.name ?? "Producto"}</span>
+              <h1>{item.name}</h1>
+              <div className="mn-pdp-price">
+                <strong>{formatMoney(getEffectiveProductPrice(item))}</strong>
+                {discount ? <><s>{formatMoney(item.basePrice)}</s><span className="mn-pdp-off">-{discount}%</span></> : null}
+              </div>
+              {remaining !== null ? <p className={`mn-pdp-stock ${outOfStock ? "out" : ""}`}>{outOfStock ? "Sin stock" : remaining <= LOW_STOCK_THRESHOLD ? (remaining === 1 ? "¡Queda 1!" : `¡Quedan ${remaining}!`) : `${remaining} disponibles`}</p> : null}
+              {item.description ? <p className="mn-pdp-desc">{item.description}</p> : null}
+              {item.optionGroups.map((group) => {
+                const available = group.options.filter((option) => option.isAvailable);
+                const chosen = available.filter((option) => selectedOptionIds.includes(option.id)).map((option) => option.name).join(", ");
+                const asColors = isColorGroup(group);
+                return (
+                  <fieldset className="mn-pdp-group" key={group.id}>
+                    <legend>{group.name} <span>· {chosen || (group.selectionType === "SINGLE" ? "elegí uno" : group.maxSelections ? `elegí hasta ${group.maxSelections}` : "elegí los que quieras")}</span></legend>
+                    <div className={asColors ? "mn-swatches" : "mn-chips"}>
+                      {available.map((option) => {
+                        const checked = selectedOptionIds.includes(option.id);
+                        const input = <input className="sr-only" type={group.selectionType === "SINGLE" ? "radio" : "checkbox"} name={group.id} checked={checked} onChange={() => toggleOption(group, option.id)} />;
+                        return asColors && option.colorHex ? (
+                          <label key={option.id} className={`mn-swatch ${checked ? "is-on" : ""}`}>
+                            {input}
+                            <span className={`mn-swatch-dot ${isLightColor(option.colorHex) ? "is-light" : ""}`} style={{ "--swatch": option.colorHex } as CSSProperties}>{checked ? <Check size={16} strokeWidth={3} aria-hidden="true" /> : null}</span>
+                            <span className="mn-swatch-name">{option.name}</span>
+                            {option.priceDelta ? <span className="mn-swatch-price">+{formatMoney(option.priceDelta)}</span> : null}
+                          </label>
+                        ) : (
+                          <label key={option.id} className={`mn-chip ${checked ? "is-on" : ""}`}>
+                            {input}
+                            {checked ? <Check size={15} strokeWidth={2.5} aria-hidden="true" /> : null}
+                            {option.name}
+                            {option.priceDelta ? <span className="mn-chip-price">+{formatMoney(option.priceDelta)}</span> : null}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </fieldset>
+                );
+              })}
+              {error && !checkoutOpen ? <p ref={productErrorRef} className="form-error" role="alert">{error}</p> : null}
+              <div className="mn-pdp-buy">
+                {!outOfStock ? (
+                  <div className="mn-stepper" role="group" aria-label="Cantidad">
+                    <button onClick={() => changeQuantity(-1)} disabled={quantity <= 1} aria-label="Restar una unidad" type="button"><Minus size={16} /></button>
+                    <strong aria-live="polite">{quantity}</strong>
+                    <button onClick={() => changeQuantity(1)} disabled={remaining !== null && quantity >= remaining} aria-label="Sumar una unidad" type="button"><Plus size={16} /></button>
+                  </div>
+                ) : null}
+                <button className={`mn-pdp-cta ${added ? "is-added" : ""}`} onClick={addPageProduct} disabled={outOfStock} type="button">
+                  {outOfStock ? "Sin stock" : added ? <><Check size={18} strokeWidth={2.6} aria-hidden="true" /> Agregado al carrito</> : `Agregar · ${formatMoney(calculateUnitPrice(item, selectedOptionIds) * quantity)}`}
+                </button>
+              </div>
+              <div className="mn-pdp-share">
+                <button className="mn-pdp-share-btn" onClick={shareProduct} type="button">
+                  {shareCopied ? <Check size={17} aria-hidden="true" /> : <Share2 size={17} aria-hidden="true" />}
+                  {shareCopied ? "Link copiado" : "Compartir"}
+                </button>
+                {consultHref ? <a className="mn-pdp-share-btn" href={consultHref} target="_blank" rel="noreferrer"><WhatsappIcon className="h-[17px] w-[17px]" aria-hidden="true" /> Consultar</a> : null}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {relatedProducts.length ? (
+          <section className="mn-related" aria-labelledby="related-title">
+            <div className="container">
+              <div className="section-title">
+                <span className="section-eyebrow">para combinar</span>
+                <h2 id="related-title">También te puede gustar</h2>
+              </div>
+              <div className={`product-grid mobile-cols-${store.mobileProductColumns}`}>
+                {relatedProducts.map(renderProductCard)}
+              </div>
+            </div>
+          </section>
+        ) : null}
+      </>
     );
   }
 
@@ -578,7 +878,9 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
     openCart,
     selectCategory,
     whatsappUrl: publicWhatsapp,
-    renderCatalog
+    homeHref,
+    renderCatalog,
+    renderPage: pageProduct ? renderProductPage : undefined
   };
 
   return (
@@ -587,130 +889,31 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
 
       {cartCount > 0 && !checkoutOpen ? <button className="cart-summary" onClick={openCart} aria-label={`Ver carrito, ${cartCount} producto(s), total ${formatMoney(cartTotal)}`} type="button"><span className="cart-summary-label"><ShoppingCart size={18} /><span>Ver carrito · {cartCount} producto(s)</span></span><strong>{formatMoney(cartTotal)}</strong></button> : null}
 
-      {activeProduct ? (
-        <div className="modal-backdrop" onClick={() => setActiveProduct(null)}>
-          <div className="modal-wrap">
-            <section className="mn-sheet" role="dialog" aria-modal="true" aria-labelledby="product-modal-title" onClick={(event) => event.stopPropagation()}>
-              <div className="mn-sheet-media">
-                <div
-                  className={`mn-sheet-photo ${activeProduct.imageUrls.length ? "can-expand" : ""}`}
-                  onClick={(event) => {
-                    if (photoSwiped.current || event.target !== event.currentTarget && !(event.target instanceof HTMLImageElement)) return;
-                    openViewer();
-                  }}
-                  onTouchStart={(event) => { photoTouchStart.current = event.touches[0]?.clientX ?? null; photoSwiped.current = false; }}
-                  onTouchEnd={(event) => {
-                    const start = photoTouchStart.current;
-                    const end = event.changedTouches[0]?.clientX;
-                    photoTouchStart.current = null;
-                    if (start === null || end === undefined || Math.abs(end - start) < 40) return;
-                    photoSwiped.current = true;
-                    showProductImage(activeImageIndex + (end < start ? 1 : -1));
-                  }}
-                >
-                  {activeProduct.imageUrls.length ? <img src={activeProduct.imageUrls[activeImageIndex] ?? activeProduct.imageUrls[0]} alt={`${activeProduct.name}, foto ${activeImageIndex + 1}`} /> : <ImageIcon size={32} aria-hidden="true" />}
-                  {activeProduct.imageUrls.length ? <button className="mn-sheet-expand" onClick={openViewer} type="button"><Maximize2 size={15} aria-hidden="true" /> Ver completa</button> : null}
-                  {activeProduct.imageUrls.length > 1 ? <>
-                    <button className="mn-sheet-arrow is-prev" onClick={() => showProductImage(activeImageIndex - 1)} aria-label="Foto anterior" type="button"><ChevronLeft size={20} /></button>
-                    <button className="mn-sheet-arrow is-next" onClick={() => showProductImage(activeImageIndex + 1)} aria-label="Foto siguiente" type="button"><ChevronRight size={20} /></button>
-                    <span className="mn-sheet-counter" aria-hidden="true">{activeImageIndex + 1} / {activeProduct.imageUrls.length}</span>
-                  </> : null}
-                  <button className="mn-sheet-close" onClick={() => setActiveProduct(null)} aria-label="Cerrar producto" type="button"><X size={18} /></button>
-                </div>
-                {activeProduct.imageUrls.length > 1 ? (
-                  <div className="mn-thumbs" role="group" aria-label="Fotos del producto">
-                    {activeProduct.imageUrls.map((url, index) => (
-                      <button key={`${url}-${index}`} className={index === activeImageIndex ? "is-on" : ""} onClick={() => setActiveImageIndex(index)} aria-label={`Ver foto ${index + 1}`} aria-pressed={index === activeImageIndex} type="button">
-                        <img src={url} alt="" loading="lazy" />
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-              <div className="mn-sheet-body">
-                <div className="mn-sheet-scroll">
-                  <span className="mn-sheet-cat">{activeProduct.category?.name ?? "Producto"}</span>
-                  <h2 id="product-modal-title">{activeProduct.name}</h2>
-                  <div className="mn-sheet-price">
-                    <strong>{formatMoney(getEffectiveProductPrice(activeProduct))}</strong>
-                    {getDiscountPercent(activeProduct) ? <><s>{formatMoney(activeProduct.basePrice)}</s><span className="mn-sheet-off">-{getDiscountPercent(activeProduct)}%</span></> : null}
-                  </div>
-                  {activeProduct.description ? <p className="mn-sheet-desc">{activeProduct.description}</p> : null}
-                  {remainingStock(activeProduct) !== null ? <p className={`mn-sheet-stock ${isOutOfStock(activeProduct) ? "out" : ""}`}>{isOutOfStock(activeProduct) ? "Sin stock" : `Quedan ${remainingStock(activeProduct)}`}</p> : null}
-                  {activeProduct.optionGroups.map((group) => {
-                    const available = group.options.filter((option) => option.isAvailable);
-                    const chosen = available.filter((option) => selectedOptionIds.includes(option.id)).map((option) => option.name).join(", ");
-                    const asColors = isColorGroup(group);
-                    return (
-                      <fieldset className="mn-sheet-group" key={group.id}>
-                        <legend>{group.name} <span>· {chosen || (group.selectionType === "SINGLE" ? "elegí uno" : group.maxSelections ? `elegí hasta ${group.maxSelections}` : "elegí los que quieras")}</span></legend>
-                        <div className={asColors ? "mn-swatches" : "mn-chips"}>
-                          {available.map((option) => {
-                            const checked = selectedOptionIds.includes(option.id);
-                            const input = <input className="sr-only" type={group.selectionType === "SINGLE" ? "radio" : "checkbox"} name={group.id} checked={checked} onChange={() => toggleOption(group, option.id)} />;
-                            return asColors && option.colorHex ? (
-                              <label key={option.id} className={`mn-swatch ${checked ? "is-on" : ""}`}>
-                                {input}
-                                <span className={`mn-swatch-dot ${isLightColor(option.colorHex) ? "is-light" : ""}`} style={{ "--swatch": option.colorHex } as CSSProperties}>{checked ? <Check size={16} strokeWidth={3} aria-hidden="true" /> : null}</span>
-                                <span className="mn-swatch-name">{option.name}</span>
-                                {option.priceDelta ? <span className="mn-swatch-price">+{formatMoney(option.priceDelta)}</span> : null}
-                              </label>
-                            ) : (
-                              <label key={option.id} className={`mn-chip ${checked ? "is-on" : ""}`}>
-                                {input}
-                                {checked ? <Check size={15} strokeWidth={2.5} aria-hidden="true" /> : null}
-                                {option.name}
-                                {option.priceDelta ? <span className="mn-chip-price">+{formatMoney(option.priceDelta)}</span> : null}
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </fieldset>
-                    );
-                  })}
-                  {error ? <p ref={modalErrorRef} className="form-error" role="alert">{error}</p> : null}
-                </div>
-                <div className="mn-sheet-foot">
-                  {!isOutOfStock(activeProduct) ? (
-                    <div className="mn-stepper" role="group" aria-label="Cantidad">
-                      <button onClick={() => changeQuantity(-1)} disabled={quantity <= 1} aria-label="Restar una unidad" type="button"><Minus size={16} /></button>
-                      <strong aria-live="polite">{quantity}</strong>
-                      <button onClick={() => changeQuantity(1)} disabled={remainingStock(activeProduct) !== null && quantity >= (remainingStock(activeProduct) ?? 0)} aria-label="Sumar una unidad" type="button"><Plus size={16} /></button>
-                    </div>
-                  ) : null}
-                  <button className="mn-sheet-cta" onClick={addActiveProduct} disabled={isOutOfStock(activeProduct)} type="button">{isOutOfStock(activeProduct) ? "Sin stock" : `Agregar · ${formatMoney(calculateUnitPrice(activeProduct, selectedOptionIds) * quantity)}`}</button>
-                </div>
-              </div>
-            </section>
-          </div>
-        </div>
-      ) : null}
-
-      {activeProduct && viewerOpen && activeProduct.imageUrls.length ? (
-        <div className="mn-viewer" role="dialog" aria-modal="true" aria-label={`Fotos de ${activeProduct.name}`}>
+      {pageProduct && viewerOpen && pageProduct.imageUrls.length ? (
+        <div className="mn-viewer" role="dialog" aria-modal="true" aria-label={`Fotos de ${pageProduct.name}`}>
           <div className="mn-viewer-top">
-            <span className="mn-viewer-count">{activeImageIndex + 1} / {activeProduct.imageUrls.length}</span>
-            <span className="mn-viewer-name">{activeProduct.name}</span>
+            <span className="mn-viewer-count">{activeImageIndex + 1} / {pageProduct.imageUrls.length}</span>
+            <span className="mn-viewer-name">{pageProduct.name}</span>
             <button className="mn-viewer-btn" onClick={closeViewer} aria-label="Cerrar fotos" type="button" autoFocus><X size={20} /></button>
           </div>
           <div className="mn-viewer-stage" onPointerDown={startViewerGesture} onPointerUp={endViewerGesture} onPointerCancel={() => { viewerPointer.current = null; }}>
             <img
               key={activeImageIndex}
-              src={activeProduct.imageUrls[activeImageIndex] ?? activeProduct.imageUrls[0]}
-              alt={`${activeProduct.name}, foto ${activeImageIndex + 1}`}
+              src={pageProduct.imageUrls[activeImageIndex] ?? pageProduct.imageUrls[0]}
+              alt={`${pageProduct.name}, foto ${activeImageIndex + 1}`}
               className={viewerZoom ? "is-zoomed" : ""}
               style={viewerZoom ? { transformOrigin: `${viewerZoom.x}% ${viewerZoom.y}%` } : undefined}
               draggable={false}
             />
-            {activeProduct.imageUrls.length > 1 ? <>
+            {pageProduct.imageUrls.length > 1 ? <>
               <button className="mn-viewer-btn mn-viewer-arrow is-prev" onPointerUp={(event) => event.stopPropagation()} onClick={() => showViewerImage(activeImageIndex - 1)} aria-label="Foto anterior" type="button"><ChevronLeft size={22} /></button>
               <button className="mn-viewer-btn mn-viewer-arrow is-next" onPointerUp={(event) => event.stopPropagation()} onClick={() => showViewerImage(activeImageIndex + 1)} aria-label="Foto siguiente" type="button"><ChevronRight size={22} /></button>
             </> : null}
           </div>
           <div className="mn-viewer-bottom">
-            {activeProduct.imageUrls.length > 1 ? (
+            {pageProduct.imageUrls.length > 1 ? (
               <div className="mn-viewer-thumbs" role="group" aria-label="Elegir foto">
-                {activeProduct.imageUrls.map((url, index) => (
+                {pageProduct.imageUrls.map((url, index) => (
                   <button key={`${url}-${index}`} className={index === activeImageIndex ? "is-on" : ""} onClick={() => showViewerImage(index)} aria-label={`Ver foto ${index + 1}`} aria-pressed={index === activeImageIndex} type="button">
                     <img src={url} alt="" loading="lazy" />
                   </button>

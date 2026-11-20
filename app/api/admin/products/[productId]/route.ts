@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import {
-  makeProductSlug,
   normalizeImagePaths,
   normalizePromoPrice,
   normalizePurchasePrice,
@@ -16,6 +15,7 @@ import {
 import { getAdminProducts } from "@/lib/admin-data";
 import { getMerchantContext } from "@/lib/merchant";
 import { parsePriceToCents } from "@/lib/money";
+import { buildProductSlug, createProductCode, productSlugCode } from "@/lib/product-url";
 
 type Params = Promise<{ productId: string }>;
 
@@ -148,9 +148,10 @@ export async function PATCH(request: Request, { params }: { params: Params }) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Datos inválidos" }, { status: 400 });
   }
 
-  const slug = result.data.name.trim() === existing.name ? existing.slug : makeProductSlug(result.data.name);
+  // A rename keeps the product's code, so links shared before still find it.
+  let slug = buildProductSlug(result.data.name, productSlugCode(existing.slug) ?? createProductCode());
   const { data: collision } = await supabase.from("products").select("id").eq("store_id", store.id).eq("slug", slug).neq("id", productId).maybeSingle();
-  if (collision) return NextResponse.json({ error: "Ya existe un producto con ese nombre." }, { status: 409 });
+  if (collision) slug = buildProductSlug(result.data.name, createProductCode());
 
   let uploadedImages: string[] = [];
   try {
