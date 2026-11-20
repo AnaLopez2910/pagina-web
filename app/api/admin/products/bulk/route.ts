@@ -2,8 +2,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getAdminProducts } from "@/lib/admin-data";
-import { resolveProductCategoryId } from "@/lib/admin-catalog";
+import { deleteProductImages, resolveProductCategoryId } from "@/lib/admin-catalog";
 import { getMerchantContext } from "@/lib/merchant";
+
+const bulkDeleteSchema = z.object({
+  productIds: z.array(z.string().min(1).max(80)).min(1).max(1000)
+});
 
 const bulkUpdateSchema = z.discriminatedUnion("action", [
   z.object({
@@ -69,4 +73,42 @@ export async function PATCH(request: Request) {
 
   const updatedProducts = await getAdminProducts(supabase, store.id);
   return NextResponse.json({ products: updatedProducts.filter((product) => productIds.includes(product.id)) });
+}
+
+export async function DELETE(request: Request) {
+  const { supabase, store } = await getMerchantContext();
+  if (!store) return NextResponse.json({ error: "No autorizado" }, { status: 401 });
+
+  const result = bulkDeleteSchema.safeParse(await request.json().catch(() => null));
+  if (!result.success) {
+    return NextResponse.json({ error: result.error.issues[0]?.message ?? "Datos inválidos" }, { status: 400 });
+  }
+
+  const productIds = Array.from(new Set(result.data.productIds));
+  const { data: existingProducts, error: lookupError } = await supabase
+    .from("products")
+    .select("id, image_paths")
+    .eq("store_id", store.id)
+    .in("id", productIds);
+  if (lookupError) return NextResponse.json({ error: "No se pudieron validar los productos." }, { status: 500 });
+  if (!existingProducts || existingProducts.length !== productIds.length) {
+    return NextResponse.json({ error: "Uno o más productos ya no están disponibles." }, { status: 404 });
+  }
+
+  const { error: deleteError } = await supabase
+    .from("products")
+    .delete()
+    .eq("store_id", store.id)
+    .in("id", productIds);
+  if (deleteError) return NextResponse.json({ error: "No se pudieron eliminar los productos." }, { status: 500 });
+
+  // The products are already gone, so a failed photo cleanup is only logged (inside
+  // deleteProductImages) instead of reported: retrying the delete could not fix it.
+  try {
+    await deleteProductImages(supabase, store.id, existingProducts.flatMap((product) => product.image_paths));
+  } catch {
+    // Already logged.
+  }
+
+  return NextResponse.json({ deletedIds: productIds });
 }

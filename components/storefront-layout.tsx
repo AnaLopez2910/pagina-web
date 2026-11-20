@@ -1,9 +1,9 @@
 /* eslint-disable @next/next/no-img-element */
 
-import { ShoppingBag } from "lucide-react";
+import { ArrowRight, Gift, ShoppingCart } from "lucide-react";
 import type { FocusEventHandler, MouseEventHandler, ReactNode } from "react";
 
-import { BowIcon, HeartIcon, SparkleIcon, SquiggleLine } from "@/components/storefront-decor";
+import { BowIcon, HeartIcon, SparkleIcon } from "@/components/storefront-decor";
 import { WhatsappIcon } from "@/components/whatsapp-icon";
 import type { PublicStore } from "@/lib/catalog-data";
 
@@ -23,6 +23,8 @@ export type StorefrontView = {
   hasPromos: boolean;
   bestDiscount: number | null;
   categoryCounts: Record<string, number>;
+  // First product photo per category slug, used when a category has no photo of its own.
+  categoryCovers: Record<string, string | null>;
   cartCount: number;
   openCart: () => void;
   selectCategory: (category: string) => void;
@@ -30,24 +32,19 @@ export type StorefrontView = {
   renderCatalog: (copy: CatalogCopy) => ReactNode;
 };
 
-const CATEGORY_FALLBACK_IMAGES = [
-  "https://images.unsplash.com/photo-1631214540553-ff044a3ff1d4?auto=format&fit=crop&w=700&q=80",
-  "https://images.unsplash.com/photo-1512496015851-a90fb38ba796?auto=format&fit=crop&w=700&q=80",
-  "https://images.unsplash.com/photo-1522335789203-aabd1fc54bc9?auto=format&fit=crop&w=700&q=80",
-  "https://images.unsplash.com/photo-1607779097040-26e80aa78e66?auto=format&fit=crop&w=700&q=80"
-];
-
 function heroSubtitle(store: PublicStore) {
   return store.heroSubtitle ?? store.description ?? "Pestañas, maquillaje y accesorios seleccionados para vos.";
 }
 
-function categoryImage(category: PublicStore["categories"][number], index: number) {
-  return category.imageUrl ?? CATEGORY_FALLBACK_IMAGES[index % CATEGORY_FALLBACK_IMAGES.length];
-}
-
-function productCountLabel(count: number | undefined) {
-  if (!count) return "Próximamente";
-  return `${count} ${count === 1 ? "producto" : "productos"}`;
+// The showcase only offers categories with products. Uploading a category photo is how
+// it gets picked; with no photos at all it falls back to every category with products.
+function showcaseCategories(view: StorefrontView) {
+  const stocked = view.store.categories.filter((category) => (view.categoryCounts[category.slug] ?? 0) > 0);
+  const withPhoto = stocked.filter((category) => category.imageUrl);
+  return (withPhoto.length ? withPhoto : stocked).slice(0, 4).map((category) => ({
+    ...category,
+    cover: category.imageUrl ?? view.categoryCovers[category.slug] ?? null
+  }));
 }
 
 export function SectionTitle({ eyebrow, title, subtitle, centered = false }: { eyebrow: ReactNode; title: string; subtitle?: string; centered?: boolean }) {
@@ -68,7 +65,7 @@ function BrandMark({ store }: { store: PublicStore }) {
 function StoreLinks({ view, className = "" }: { view: StorefrontView; className?: string }) {
   return (
     <nav className={`store-links ${className}`} aria-label="Navegación principal">
-      {view.store.showCategories ? <a href="#categorias">Categorías</a> : null}
+      {view.store.showCategories && view.store.categories.length ? <a href="#categorias">Categorías</a> : null}
       <a href="#productos">Productos</a>
       {view.hasPromos ? <a href="#productos" onClick={() => view.selectCategory("promos")}>Promos</a> : null}
     </nav>
@@ -91,32 +88,13 @@ function HeroSlides({ view }: { view: StorefrontView }) {
   );
 }
 
-function HeroDots({ view }: { view: StorefrontView }) {
-  if (view.heroImages.length < 2) return null;
-  return (
-    <div className="hero-dots mn-dots" role="group" aria-label="Imágenes destacadas">
-      {view.heroImages.map((image, index) => (
-        <button
-          key={`${image}-dot`}
-          className={index === view.heroIndex ? "active" : ""}
-          onClick={() => view.showHeroImage(index)}
-          aria-label={`Ver imagen ${index + 1}`}
-          aria-pressed={index === view.heroIndex}
-          type="button"
-        />
-      ))}
-    </div>
-  );
-}
-
 function WhatsappLink({ view, className, children }: { view: StorefrontView; className?: string; children: ReactNode }) {
   return <a href={view.whatsappUrl} target="_blank" rel="noreferrer" className={className}>{children}</a>;
 }
 
 export function StorefrontLayout({ view }: { view: StorefrontView }) {
   const { store } = view;
-  const words = store.categories.length ? store.categories.map((category) => category.name) : ["Pestañas", "Maquillaje", "Skincare", "Accesorios"];
-  const marquee = Array.from({ length: Math.max(8, words.length) }, (_, index) => words[index % words.length]);
+  const tiles = store.showCategories ? showcaseCategories(view) : [];
   const year = new Date().getFullYear();
 
   return (
@@ -129,64 +107,50 @@ export function StorefrontLayout({ view }: { view: StorefrontView }) {
           </a>
           <StoreLinks view={view} className="mn-links" />
           <button className="cart-btn mn-cart" onClick={view.openCart} aria-label={`Abrir carrito, ${view.cartCount} producto(s)`} type="button">
-            <ShoppingBag size={19} aria-hidden="true" />
-            <span className="cart-btn-label">Mi bolsita</span>
+            <ShoppingCart size={19} aria-hidden="true" />
+            <span className="cart-btn-label">Carrito</span>
             <span className="cart-count">{view.cartCount}</span>
           </button>
         </div>
       </header>
 
       <main id="top">
-        <section className="mn-hero">
-          <div className="container mn-hero-grid">
-            <div className="mn-hero-copy">
-              <p className="mn-script">¡Hola, linda! <HeartIcon className="mn-inline-heart" /></p>
-              <h1>{store.heroTitle ?? store.name}</h1>
-              <SquiggleLine className="mn-squiggle" />
-              <p className="mn-hero-text">{heroSubtitle(store)}</p>
+        <section className="mn-vitrina">
+          <div className={`container mn-vitrina-grid ${tiles.length ? "" : "no-tiles"}`}>
+            <div className="mn-showcase" {...view.heroPauseHandlers}>
+              <div className="mn-showcase-media"><HeroSlides view={view} /></div>
+              <SparkleIcon className="mn-twinkle mn-twinkle-1" />
+              <SparkleIcon className="mn-twinkle mn-twinkle-2" />
+              <div className="mn-showcase-copy">
+                <h1>{store.heroTitle ?? store.name}</h1>
+                <p>{heroSubtitle(store)}</p>
+                <a className="mn-showcase-cta" href="#productos">Ver productos <ArrowRight size={18} aria-hidden="true" /></a>
+              </div>
             </div>
 
-            <div className="mn-hero-art" {...view.heroPauseHandlers}>
-              <BowIcon className="mn-art-bow" />
-              <div className="mn-arch"><HeroSlides view={view} /></div>
-              <span className="mn-sticker-badge">
-                {view.bestDiscount ? <>Hasta<strong>{view.bestDiscount}%</strong>OFF</> : <>Nuevos<strong>mimos</strong>para vos</>}
-              </span>
-              {store.logoUrl ? <img className="mn-sticker-logo" src={store.logoUrl} alt="" /> : null}
-              <HeartIcon className="mn-float mn-float-1" />
-              <HeartIcon className="mn-float mn-float-2" />
-              <SparkleIcon className="mn-float mn-float-3" />
-              <HeroDots view={view} />
-            </div>
+            {tiles.length ? (
+              <div id="categorias" className={`mn-cat-tiles count-${tiles.length}`}>
+                {tiles.map((category) => (
+                  <button className="mn-cat-tile" key={category.id} onClick={() => view.selectCategory(category.slug)} type="button">
+                    {category.cover ? <img src={category.cover} alt="" loading="lazy" /> : null}
+                    <span className="mn-cat-tag">{category.name} <ArrowRight size={15} strokeWidth={2.6} aria-hidden="true" /></span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+
+            {view.hasPromos ? (
+              <button className="mn-promo-strip" onClick={() => view.selectCategory("promos")} type="button">
+                <Gift size={24} strokeWidth={1.7} aria-hidden="true" />
+                <span className="mn-promo-bar" aria-hidden="true" />
+                <span className="mn-promo-text">Promos que enamoran <HeartIcon className="mn-promo-heart" /></span>
+                <ArrowRight size={22} aria-hidden="true" />
+              </button>
+            ) : null}
           </div>
         </section>
 
-        <div className="mn-marquee" aria-hidden="true">
-          <div className="mn-marquee-track">
-            {[...marquee, ...marquee].map((word, index) => <span key={`${word}-${index}`}>{word} <HeartIcon /></span>)}
-          </div>
-        </div>
-
         {!store.availability.isOpen ? <div className="container"><div className="closed-notice">{store.availability.label}</div></div> : null}
-
-        {store.showCategories ? (
-          <section id="categorias" className="mn-section">
-            <div className="container">
-              <SectionTitle eyebrow="explorá" title="Categorías" subtitle="Encontrá rápido lo que estás buscando." centered />
-              {store.categories.length ? (
-                <div className="mn-cats">
-                  {store.categories.map((category, index) => (
-                    <button className="mn-cat" key={category.id} onClick={() => view.selectCategory(category.slug)} type="button">
-                      <span className="mn-cat-ring"><img src={categoryImage(category, index)} alt="" /></span>
-                      <span className="mn-cat-name">{category.name}</span>
-                      <span className="mn-cat-count">{productCountLabel(view.categoryCounts[category.slug])}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : <p className="empty-state">Todavía no hay categorías para mostrar.</p>}
-            </div>
-          </section>
-        ) : null}
 
         {view.renderCatalog({ eyebrow: "lo más lindo", title: "Mimos favoritos", subtitle: "Elegí lo que más te guste y armá tu pedido en minutos." })}
 

@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import type { CategoryRow, OptionGroupRow, ProductOptionRow, ProductRow, StoreRow } from "@/types/database";
 import { getPublicImageUrl } from "@/lib/storage";
+import { normalizeProductSort, orderProducts } from "@/lib/product-order";
 
 export type StorefrontProduct = {
   id: string;
@@ -12,6 +13,9 @@ export type StorefrontProduct = {
   imageUrls: string[];
   stockQuantity: number | null;
   category: { id: string; name: string; slug: string } | null;
+  // Position in the store's chosen order, so shopper sorts break ties the same way.
+  sortOrder: number;
+  createdAt: string;
   optionGroups: Array<{
     id: string;
     name: string;
@@ -35,6 +39,7 @@ export type PublicStore = {
   categories: Array<{ id: string; name: string; slug: string; imageUrl: string | null }>;
   showCategories: boolean;
   mobileProductColumns: 1 | 2;
+  soldOutLast: boolean;
   freeShipping: { enabled: boolean; threshold: number };
   availability: { isOpen: boolean; label: string };
 };
@@ -61,6 +66,8 @@ function mapProduct(
     imageUrls: product.image_paths.map(getPublicImageUrl),
     stockQuantity: product.stock_quantity,
     category: category ? { id: category.id, name: category.name, slug: category.slug } : null,
+    sortOrder: product.sort_order,
+    createdAt: product.created_at,
     optionGroups: groups
       .filter((group) => group.product_id === product.id)
       .sort((a, b) => a.sort_order - b.sort_order)
@@ -86,7 +93,8 @@ function mapProduct(
 
 export async function getPublicStore(slug?: string) {
   const supabase = await createClient();
-  let query = supabase.from("stores").select("id,name,slug,description,whatsapp_phone,logo_path,hero_title,hero_subtitle,hero_image_paths,address,business_hours,restrict_by_schedule,show_categories,mobile_product_columns,free_shipping_enabled,free_shipping_threshold,is_published,created_at,updated_at").eq("is_published", true);
+  // "*" instead of a column list keeps the catalog working before a new store column is migrated.
+  let query = supabase.from("stores").select("*").eq("is_published", true);
   if (slug) {
     query = query.eq("slug", slug);
   }
@@ -111,9 +119,15 @@ export async function getPublicStore(slug?: string) {
     : { data: [] as ProductOptionRow[] };
 
   const { getStoreAvailability } = await import("@/lib/store-settings");
+  const categoriesById = new Map(typedCategories.map((category) => [category.id, category]));
+  const mappedProducts = typedProducts.map((product) => mapProduct(product, categoriesById, groups as OptionGroupRow[], options as ProductOptionRow[]));
+  const orderedProducts = orderProducts(mappedProducts, normalizeProductSort((store as StoreRow).product_sort), {
+    soldOutLast: (store as StoreRow).sold_out_last ?? true,
+    categoryIds: typedCategories.map((category) => category.id)
+  }).map((product, index) => ({ ...product, sortOrder: index }));
   return {
     store: mapStore(store as StoreRow, typedCategories),
-    products: typedProducts.map((product) => mapProduct(product, new Map(typedCategories.map((category) => [category.id, category])), groups as OptionGroupRow[], options as ProductOptionRow[])),
+    products: orderedProducts,
     availability: getStoreAvailability({ restrictBySchedule: store.restrict_by_schedule, businessHours: store.business_hours })
   };
 }
@@ -153,6 +167,7 @@ function mapStore(store: StoreRow, categories: CategoryRow[]): PublicStore {
     })),
     showCategories: store.show_categories,
     mobileProductColumns: store.mobile_product_columns === 1 ? 1 : 2,
+    soldOutLast: store.sold_out_last ?? true,
     freeShipping: {
       enabled: store.free_shipping_enabled,
       threshold: store.free_shipping_threshold

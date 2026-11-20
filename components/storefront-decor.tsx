@@ -30,11 +30,3 @@ export function SparkleIcon(props: DecorProps) {
     </svg>
   );
 }
-
-export function SquiggleLine(props: DecorProps) {
-  return (
-    <svg viewBox="0 0 220 16" fill="none" preserveAspectRatio="none" aria-hidden="true" {...props}>
-      <path d="M2 10c12-8 24-8 36 0s24 8 36 0 24-8 36 0 24 8 36 0 24-8 36 0 24 8 36 0" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
-    </svg>
-  );
-}

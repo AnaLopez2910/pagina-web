@@ -33,6 +33,8 @@ export async function getAdminProducts(supabase: SupabaseClient<Database>, store
       isVisible: product.is_visible,
       stockQuantity: product.stock_quantity,
       category: category ? { id: category.id, name: category.name, slug: category.slug } : null,
+      sortOrder: product.sort_order,
+      createdAt: product.created_at,
       optionGroups: (groups as OptionGroupRow[])
         .filter((group) => group.product_id === product.id)
         .map((group) => ({

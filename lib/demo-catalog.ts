@@ -18,12 +18,18 @@ function category(slug: string) {
   return match ? { id: match.id, name: match.name, slug: match.slug } : null;
 }
 
-function product(input: Omit<StorefrontProduct, "slug" | "stockQuantity" | "promoPrice" | "optionGroups"> & Partial<Pick<StorefrontProduct, "stockQuantity" | "promoPrice" | "optionGroups">>): StorefrontProduct {
+let demoProductCount = 0;
+
+function product(input: Omit<StorefrontProduct, "slug" | "stockQuantity" | "promoPrice" | "optionGroups" | "sortOrder" | "createdAt"> & Partial<Pick<StorefrontProduct, "stockQuantity" | "promoPrice" | "optionGroups">>): StorefrontProduct {
+  const position = demoProductCount++;
   return {
     slug: input.id,
     stockQuantity: null,
     promoPrice: null,
     optionGroups: [],
+    sortOrder: position,
+    // Later products count as newer, so "Lo más nuevo" has something to sort by.
+    createdAt: new Date(Date.UTC(2026, 10, 1 + position)).toISOString(),
     ...input
   };
 }
@@ -35,7 +41,7 @@ export const demoProducts: StorefrontProduct[] = [
     description: "Pestañas más largas y curvadas desde la primera pasada, sin grumos.",
     basePrice: 8900,
     promoPrice: 6900,
-    imageUrls: [unsplash("1631214540553-ff044a3ff1d4")],
+    imageUrls: [unsplash("1631214540553-ff044a3ff1d4"), unsplash("1512496015851-a90fb38ba796")],
     category: category("pestanas"),
     optionGroups: [{
       id: "demo-mascara-color",
@@ -71,7 +77,7 @@ export const demoProducts: StorefrontProduct[] = [
     name: "Labial Cremoso Rosé",
     description: "Color intenso con acabado satinado y fórmula hidratante.",
     basePrice: 7200,
-    imageUrls: [unsplash("1625093742435-6fa192b6fb10")],
+    imageUrls: [unsplash("1625093742435-6fa192b6fb10"), unsplash("1586495777744-4413f21062fa"), unsplash("1599948128020-9a44505b0d1b")],
     category: category("maquillaje"),
     optionGroups: [{
       id: "demo-labial-tono",
@@ -173,6 +179,7 @@ export const demoStore: PublicStore = {
   categories,
   showCategories: true,
   mobileProductColumns: 2,
+  soldOutLast: true,
   freeShipping: { enabled: true, threshold: 35000 },
   availability: { isOpen: true, label: "Tienda abierta" }
 };
