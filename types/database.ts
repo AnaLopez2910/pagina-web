@@ -19,6 +19,8 @@ export type StoreRow = {
   mobile_product_columns: number;
   free_shipping_enabled: boolean;
   free_shipping_threshold: number;
+  product_sort: string;
+  sold_out_last: boolean;
   is_published: boolean;
   created_at: string;
   updated_at: string;
@@ -170,6 +172,10 @@ export type Database = {
           whatsapp_phone: string;
           items: Json;
         }>;
+      };
+      reorder_products: {
+        Args: { p_product_ids: string[] };
+        Returns: undefined;
       };
     };
     Enums: Record<string, never>;

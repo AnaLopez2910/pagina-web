@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ClipboardList, LayoutDashboard, LogOut, Menu, Package, Settings, Store, X } from "lucide-react";
+import { ClipboardList, LayoutDashboard, LogOut, Menu, Package, Settings, Store, Tags, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { useUnsavedChanges } from "@/components/unsaved-changes-provider";
@@ -32,6 +32,9 @@ function NavContent({ pathname, storeSlug, onNavigate }: { pathname: string; sto
         </Link>
         <Link className={linkClass(pathname, "/gestion/productos")} href="/gestion/productos" onClick={onNavigate}>
           <Package className="mr-2 inline" size={18} /> Productos
+        </Link>
+        <Link className={linkClass(pathname, "/gestion/categorias")} href="/gestion/categorias" onClick={onNavigate}>
+          <Tags className="mr-2 inline" size={18} /> Categorías
         </Link>
         <Link className={linkClass(pathname, "/gestion/configuracion")} href="/gestion/configuracion" onClick={onNavigate}>
           <Settings className="mr-2 inline" size={18} /> Configuración

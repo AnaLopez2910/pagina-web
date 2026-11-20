@@ -1,6 +1,7 @@
 import { ProductForm } from "@/components/product-form";
 import { getAdminCategories, getAdminProducts } from "@/lib/admin-data";
 import { getMerchantContext } from "@/lib/merchant";
+import { normalizeProductSort } from "@/lib/product-order";
 
 export default async function GestionProductsPage() {
   const { supabase, store } = await getMerchantContext();
@@ -16,7 +17,7 @@ export default async function GestionProductsPage() {
         <h1 className="font-display mt-2 text-3xl font-black sm:text-4xl">Productos</h1>
         <p className="mt-2 text-muted">Tu catálogo, simple y a mano.</p>
       </header>
-      <ProductForm products={products} categories={categories} />
+      <ProductForm products={products} categories={categories} productSort={normalizeProductSort(store.product_sort)} soldOutLast={store.sold_out_last ?? true} />
     </div>
   );
 }

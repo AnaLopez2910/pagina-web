@@ -3,13 +3,14 @@
 
 import "@/app/storefront.css";
 
-import { Check, ImageIcon, Minus, Plus, Search, ShoppingBag, X } from "lucide-react";
+import { ArrowLeft, ArrowUpDown, Check, ChevronLeft, ChevronRight, ImageIcon, MapPin, Minus, Plus, Search, ShoppingCart, Trash2, Truck, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type FormEvent } from "react";
 
 import { SectionTitle, StorefrontLayout, type CatalogCopy, type StorefrontView } from "@/components/storefront-layout";
 import { useLockBodyScroll } from "@/components/use-lock-body-scroll";
 import { WhatsappIcon } from "@/components/whatsapp-icon";
 import { getDiscountPercent, getEffectiveProductPrice } from "@/lib/catalog";
+import { orderProducts, SHOPPER_SORT_LABELS, SHOPPER_SORTS, type ShopperSort } from "@/lib/product-order";
 import type { PublicStore, StorefrontProduct } from "@/lib/catalog-data";
 import { formatMoney } from "@/lib/money";
 import { formatArgentineLocalPhone, isCompleteArgentineLocalPhone, isValidCustomerName } from "@/lib/store-settings";
@@ -85,6 +86,10 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
   const [selectedOptionIds, setSelectedOptionIds] = useState<string[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [checkoutStep, setCheckoutStep] = useState<1 | 2>(1);
+  const [shopperSort, setShopperSort] = useState<ShopperSort>("recommended");
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const photoTouchStart = useRef<number | null>(null);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [deliveryType, setDeliveryType] = useState("Punto de encuentro");
@@ -102,6 +107,10 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
     if (product.category) counts[product.category.slug] = (counts[product.category.slug] ?? 0) + 1;
     return counts;
   }, {}), [products]);
+  const categoryCovers = useMemo(() => products.reduce<Record<string, string | null>>((covers, product) => {
+    if (product.category && !covers[product.category.slug]) covers[product.category.slug] = product.imageUrls[0] ?? null;
+    return covers;
+  }, {}), [products]);
   const normalizedQuery = query.trim().toLocaleLowerCase("es-AR");
   const filteredProducts = useMemo(() => products.filter((product) => {
     const searchableText = [product.name, product.description ?? "", product.category?.name ?? ""].join(" ").toLocaleLowerCase("es-AR");
@@ -109,13 +118,20 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
     const matchesCategory = category === "all" || (category === "promos" && Boolean(getDiscountPercent(product))) || product.category?.slug === category;
     return matchesQuery && matchesCategory;
   }), [category, normalizedQuery, products]);
+  // "Recomendados" keeps the order chosen in the admin; the rest sort on top of it.
+  const sortedProducts = useMemo(
+    () => shopperSort === "recommended" ? filteredProducts : orderProducts(filteredProducts, shopperSort, { soldOutLast: store.soldOutLast }),
+    [filteredProducts, shopperSort, store.soldOutLast]
+  );
   const visibleProductLimitKey = `catalog:${store.slug}:visible-products`;
-  const visibleProducts = filteredProducts.slice(0, visibleProductLimit);
-  const remainingProductCount = Math.max(0, filteredProducts.length - visibleProducts.length);
+  const visibleProducts = sortedProducts.slice(0, visibleProductLimit);
+  const remainingProductCount = Math.max(0, sortedProducts.length - visibleProducts.length);
   const cartTotal = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
   const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+  // An emptied cart can't stay on the details step.
+  const currentCheckoutStep = cart.length ? checkoutStep : 1;
 
-  useLockBodyScroll(Boolean(activeProduct) || checkoutOpen || magicVisible);
+  useLockBodyScroll(Boolean(activeProduct) || checkoutOpen || magicVisible || sortMenuOpen);
 
   useEffect(() => {
     let restoredLimit = PUBLIC_PRODUCT_BATCH_SIZE;
@@ -149,15 +165,16 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
   }, [heroImages.length, heroPaused]);
 
   useEffect(() => {
-    if (!activeProduct && !checkoutOpen) return;
+    if (!activeProduct && !checkoutOpen && !sortMenuOpen) return;
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
       setActiveProduct(null);
       setCheckoutOpen(false);
+      setSortMenuOpen(false);
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [activeProduct, checkoutOpen]);
+  }, [activeProduct, checkoutOpen, sortMenuOpen]);
 
   useEffect(() => {
     if (!activeProduct || !error) return;
@@ -309,6 +326,30 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
     setVisibleProductLimit(PUBLIC_PRODUCT_BATCH_SIZE);
   }
 
+  function chooseShopperSort(nextSort: ShopperSort) {
+    setShopperSort(nextSort);
+    setSortMenuOpen(false);
+    setVisibleProductLimit(PUBLIC_PRODUCT_BATCH_SIZE);
+  }
+
+  function openCart() {
+    setCheckoutStep(1);
+    setError("");
+    setCheckoutOpen(true);
+  }
+
+  function showProductImage(index: number) {
+    if (!activeProduct?.imageUrls.length) return;
+    const count = activeProduct.imageUrls.length;
+    setActiveImageIndex((index + count) % count);
+  }
+
+  function goToCheckoutDetails() {
+    if (!cart.length) return;
+    setError("");
+    setCheckoutStep(2);
+  }
+
   async function submitOrder(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!store.availability.isOpen) {
@@ -372,10 +413,30 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
           <div className="catalog-head">
             <SectionTitle eyebrow={copy.eyebrow} title={copy.title} subtitle={copy.subtitle} />
             <div className="product-tools">
-              <label className="store-search">
-                <Search size={17} aria-hidden="true" />
-                <input type="search" value={query} onChange={(event) => updateProductQuery(event.target.value)} placeholder="Buscar productos" aria-label="Buscar productos" />
-              </label>
+              <div className="mn-search-row">
+                <label className="store-search">
+                  <Search size={17} aria-hidden="true" />
+                  <input type="search" value={query} onChange={(event) => updateProductQuery(event.target.value)} placeholder="Buscar productos" aria-label="Buscar productos" />
+                </label>
+                <div className="mn-sort">
+                  <button className={`mn-sort-btn ${shopperSort !== "recommended" ? "is-on" : ""}`} onClick={() => setSortMenuOpen((open) => !open)} aria-haspopup="dialog" aria-expanded={sortMenuOpen} type="button">
+                    <ArrowUpDown size={16} aria-hidden="true" />
+                    {shopperSort === "recommended" ? "Ordenar" : SHOPPER_SORT_LABELS[shopperSort]}
+                  </button>
+                  {sortMenuOpen ? <>
+                    <div className="mn-sort-backdrop" onClick={() => setSortMenuOpen(false)} aria-hidden="true" />
+                    <div className="mn-sort-menu" role="dialog" aria-label="Ordenar productos">
+                      <span className="mn-sort-title">Ordenar por</span>
+                      {SHOPPER_SORTS.map((sort) => (
+                        <button key={sort} className={`mn-sort-option ${shopperSort === sort ? "is-on" : ""}`} onClick={() => chooseShopperSort(sort)} aria-pressed={shopperSort === sort} type="button">
+                          {SHOPPER_SORT_LABELS[sort]}
+                          {shopperSort === sort ? <Check size={17} aria-hidden="true" /> : null}
+                        </button>
+                      ))}
+                    </div>
+                  </> : null}
+                </div>
+              </div>
               <div className="chips" role="group" aria-label="Filtrar productos">
                 <button className={`chip ${category === "all" ? "active" : ""}`} aria-pressed={category === "all"} onClick={() => selectCategory("all")} type="button">Todos</button>
                 {hasPromos ? <button className={`chip ${category === "promos" ? "active" : ""}`} aria-pressed={category === "promos"} onClick={() => selectCategory("promos")} type="button">Promos</button> : null}
@@ -426,11 +487,11 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
               );
             })}
           </div>
-          {!filteredProducts.length ? <div className="empty-state">No encontramos productos con esos filtros.</div> : null}
-          {filteredProducts.length ? (
+          {!sortedProducts.length ? <div className="empty-state">No encontramos productos con esos filtros.</div> : null}
+          {sortedProducts.length ? (
             <div className="catalog-foot" aria-live="polite">
-              <p>Mostrando {visibleProducts.length} de {filteredProducts.length} productos</p>
-              {remainingProductCount > 0 ? <button className="btn btn-primary" onClick={() => setVisibleProductLimit((current) => Math.min(current + PUBLIC_PRODUCT_BATCH_SIZE, filteredProducts.length))} type="button"><Plus size={18} /> Ver más productos</button> : null}
+              <p>Mostrando {visibleProducts.length} de {sortedProducts.length} productos</p>
+              {remainingProductCount > 0 ? <button className="btn btn-primary" onClick={() => setVisibleProductLimit((current) => Math.min(current + PUBLIC_PRODUCT_BATCH_SIZE, sortedProducts.length))} type="button"><Plus size={18} /> Ver más productos</button> : null}
             </div>
           ) : null}
         </div>
@@ -452,8 +513,9 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
     hasPromos,
     bestDiscount,
     categoryCounts,
+    categoryCovers,
     cartCount,
-    openCart: () => setCheckoutOpen(true),
+    openCart,
     selectCategory,
     whatsappUrl: publicWhatsapp,
     renderCatalog
@@ -463,20 +525,41 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
     <div className={`public-store ${storefrontFontClasses}`}>
       <StorefrontLayout view={view} />
 
-      {cartCount > 0 && !checkoutOpen ? <button className="cart-summary" onClick={() => setCheckoutOpen(true)} aria-label={`Ver carrito, ${cartCount} producto(s), total ${formatMoney(cartTotal)}`} type="button"><span className="cart-summary-label"><ShoppingBag size={18} /><span>Ver carrito · {cartCount} producto(s)</span></span><strong>{formatMoney(cartTotal)}</strong></button> : null}
+      {cartCount > 0 && !checkoutOpen ? <button className="cart-summary" onClick={openCart} aria-label={`Ver carrito, ${cartCount} producto(s), total ${formatMoney(cartTotal)}`} type="button"><span className="cart-summary-label"><ShoppingCart size={18} /><span>Ver carrito · {cartCount} producto(s)</span></span><strong>{formatMoney(cartTotal)}</strong></button> : null}
 
       {activeProduct ? (
         <div className="modal-backdrop" onClick={() => setActiveProduct(null)}>
           <div className="modal-wrap">
             <section className="mn-sheet" role="dialog" aria-modal="true" aria-labelledby="product-modal-title" onClick={(event) => event.stopPropagation()}>
-              <div className="mn-sheet-photo">
-                {activeProduct.imageUrls.length ? <img src={activeProduct.imageUrls[activeImageIndex] ?? activeProduct.imageUrls[0]} alt={`${activeProduct.name}, foto ${activeImageIndex + 1}`} /> : <ImageIcon size={32} aria-hidden="true" />}
+              <div className="mn-sheet-media">
+                <div
+                  className="mn-sheet-photo"
+                  onTouchStart={(event) => { photoTouchStart.current = event.touches[0]?.clientX ?? null; }}
+                  onTouchEnd={(event) => {
+                    const start = photoTouchStart.current;
+                    const end = event.changedTouches[0]?.clientX;
+                    photoTouchStart.current = null;
+                    if (start === null || end === undefined || Math.abs(end - start) < 40) return;
+                    showProductImage(activeImageIndex + (end < start ? 1 : -1));
+                  }}
+                >
+                  {activeProduct.imageUrls.length ? <img src={activeProduct.imageUrls[activeImageIndex] ?? activeProduct.imageUrls[0]} alt={`${activeProduct.name}, foto ${activeImageIndex + 1}`} /> : <ImageIcon size={32} aria-hidden="true" />}
+                  {activeProduct.imageUrls.length > 1 ? <>
+                    <button className="mn-sheet-arrow is-prev" onClick={() => showProductImage(activeImageIndex - 1)} aria-label="Foto anterior" type="button"><ChevronLeft size={20} /></button>
+                    <button className="mn-sheet-arrow is-next" onClick={() => showProductImage(activeImageIndex + 1)} aria-label="Foto siguiente" type="button"><ChevronRight size={20} /></button>
+                    <span className="mn-sheet-counter" aria-hidden="true">{activeImageIndex + 1} / {activeProduct.imageUrls.length}</span>
+                  </> : null}
+                  <button className="mn-sheet-close" onClick={() => setActiveProduct(null)} aria-label="Cerrar producto" type="button"><X size={18} /></button>
+                </div>
                 {activeProduct.imageUrls.length > 1 ? (
-                  <div className="mn-sheet-dots" role="group" aria-label="Fotos del producto">
-                    {activeProduct.imageUrls.map((url, index) => <button key={`${url}-${index}`} className={index === activeImageIndex ? "is-on" : ""} onClick={() => setActiveImageIndex(index)} aria-label={`Ver foto ${index + 1}`} aria-pressed={index === activeImageIndex} type="button" />)}
+                  <div className="mn-thumbs" role="group" aria-label="Fotos del producto">
+                    {activeProduct.imageUrls.map((url, index) => (
+                      <button key={`${url}-${index}`} className={index === activeImageIndex ? "is-on" : ""} onClick={() => setActiveImageIndex(index)} aria-label={`Ver foto ${index + 1}`} aria-pressed={index === activeImageIndex} type="button">
+                        <img src={url} alt="" loading="lazy" />
+                      </button>
+                    ))}
                   </div>
                 ) : null}
-                <button className="mn-sheet-close" onClick={() => setActiveProduct(null)} aria-label="Cerrar producto" type="button"><X size={18} /></button>
               </div>
               <div className="mn-sheet-body">
                 <div className="mn-sheet-scroll">
@@ -539,48 +622,94 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
 
       <div className={"cart-backdrop " + (checkoutOpen ? "open" : "")} onClick={() => setCheckoutOpen(false)} aria-hidden={!checkoutOpen} />
       <aside className={"cart-drawer " + (checkoutOpen ? "open" : "")} role="dialog" aria-modal="true" aria-label="Carrito" aria-hidden={!checkoutOpen}>
-        <div className="cart-head">
-          <div className="cart-head-copy"><h3>Tu pedido</h3><span>{cartCount} {cartCount === 1 ? "producto" : "productos"}</span></div>
+        <div className="ck-head">
+          {currentCheckoutStep === 1
+            ? <h3>Tu carrito</h3>
+            : <button className="ck-back" onClick={() => setCheckoutStep(1)} type="button"><ArrowLeft size={18} aria-hidden="true" /> Volver</button>}
           <button className="close-btn" onClick={() => setCheckoutOpen(false)} aria-label="Cerrar carrito" type="button"><X /></button>
         </div>
-        <div className="cart-content">
-          {cart.length ? (
-            <div className="cart-items">
-              {cart.map((item) => (
-                <article className="cart-item" key={item.lineId}>
-                  {item.imageUrl ? <img className="cart-item-image" src={item.imageUrl} alt="" /> : <div className="cart-item-image cart-item-image-placeholder" aria-hidden="true"><ImageIcon size={18} /></div>}
-                  <div><div className="cart-item-title">{item.productName}</div><div className="cart-item-price">{item.optionLabels.join(" · ") || formatMoney(item.unitPrice) + " c/u"}</div></div>
-                  <div className="qty">
-                    <button onClick={() => updateQuantity(item.lineId, -1)} aria-label={"Quitar una unidad de " + item.productName} type="button"><Minus size={15} /></button>
-                    <strong>{item.quantity}</strong>
-                    <button onClick={() => updateQuantity(item.lineId, 1)} aria-label={"Agregar una unidad de " + item.productName} type="button"><Plus size={15} /></button>
-                  </div>
-                </article>
-              ))}
+        <ol className="ck-steps" aria-label="Pasos del pedido">
+          <li className="is-on" aria-current={currentCheckoutStep === 1 ? "step" : undefined}>Productos</li>
+          <li className={currentCheckoutStep === 2 ? "is-on" : ""} aria-current={currentCheckoutStep === 2 ? "step" : undefined}>Tus datos</li>
+        </ol>
+
+        {currentCheckoutStep === 1 ? <>
+          <div className="ck-body">
+            {cart.length ? (
+              <>
+                <ul className="ck-lines">
+                  {cart.map((item) => (
+                    <li className="ck-line" key={item.lineId}>
+                      {item.imageUrl ? <img className="ck-line-img" src={item.imageUrl} alt="" /> : <span className="ck-line-img is-empty" aria-hidden="true"><ImageIcon size={18} /></span>}
+                      <div className="ck-line-info">
+                        <div className="ck-line-top"><strong>{item.productName}</strong><span>{formatMoney(item.unitPrice * item.quantity)}</span></div>
+                        {item.optionLabels.length ? <p className="ck-line-meta">{item.optionLabels.join(" · ")}</p> : null}
+                        <div className="ck-line-bottom">
+                          <div className="ck-qty" role="group" aria-label={`Cantidad de ${item.productName}`}>
+                            <button onClick={() => updateQuantity(item.lineId, -1)} aria-label={item.quantity === 1 ? `Quitar ${item.productName}` : `Restar una unidad de ${item.productName}`} type="button">{item.quantity === 1 ? <Trash2 size={14} /> : <Minus size={14} />}</button>
+                            <strong>{item.quantity}</strong>
+                            <button onClick={() => updateQuantity(item.lineId, 1)} aria-label={`Sumar una unidad de ${item.productName}`} type="button"><Plus size={14} /></button>
+                          </div>
+                          {item.quantity > 1 ? <span className="ck-unit">{formatMoney(item.unitPrice)} c/u</span> : null}
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                <p className="ck-subtotal"><span>{cartCount} {cartCount === 1 ? "producto" : "productos"}</span><span>{formatMoney(cartTotal)}</span></p>
+              </>
+            ) : <div className="cart-empty"><ShoppingCart size={34} aria-hidden="true" />Tu carrito está vacío.<br />Agregá productos para comenzar.</div>}
+            {!store.availability.isOpen ? <p className="closed-notice">{store.availability.label}</p> : null}
+            {error ? <p ref={cartErrorRef} className="form-error" role="alert">{error}</p> : null}
+          </div>
+          <div className="ck-foot">
+            <button className="ck-cta" onClick={goToCheckoutDetails} disabled={!cart.length} type="button">Continuar · {formatMoney(cartTotal)}</button>
+          </div>
+        </> : <>
+          <form id="order-form" className="ck-body" onSubmit={submitOrder} noValidate>
+            <div className="ck-summary">
+              <span className="ck-summary-imgs" aria-hidden="true">
+                {cart.slice(0, 3).map((item) => item.imageUrl ? <img key={item.lineId} src={item.imageUrl} alt="" /> : <span key={item.lineId} />)}
+              </span>
+              <p>{cartCount} {cartCount === 1 ? "producto" : "productos"}<small>{formatMoney(cartTotal)}</small></p>
+              <button onClick={() => setCheckoutStep(1)} type="button">Editar</button>
             </div>
-          ) : <div className="cart-empty"><ShoppingBag size={34} aria-hidden="true" />Tu carrito está vacío.<br />Agregá productos para comenzar.</div>}
-          <div className="checkout-card">
-            <form id="order-form" className="order-form" onSubmit={submitOrder} noValidate>
-              <div className="field"><label htmlFor="customerName">Nombre completo</label><input id="customerName" placeholder="Ana Lopez" className="store-field" name="customerName" type="text" value={customerName} onChange={(event) => setCustomerName(event.target.value)} onFocus={scrollCheckoutFieldIntoView} minLength={3} maxLength={100} autoComplete="name" required /></div>
-              <div className="field"><label htmlFor="customerPhone">Teléfono</label><input id="customerPhone" className="store-field" name="customerPhone" type="text" value={customerPhone} onChange={(event) => setCustomerPhone(formatArgentineLocalPhone(event.target.value))} onFocus={scrollCheckoutFieldIntoView} inputMode="numeric" maxLength={12} autoComplete="off" autoCapitalize="none" autoCorrect="off" placeholder="381 123-4567" required /></div>
-              <div className="field">
-                <span className="field-label">Medio de entrega</span>
-                <div className="delivery-options">
-                  <label className={"delivery-option " + (deliveryType === "Envío" ? "selected" : "")}><input type="radio" name="fulfillment" value="Envío" checked={deliveryType === "Envío"} onChange={(event) => setDeliveryType(event.target.value)} required /><span><strong>Envío</strong><small>Recibilo en tu domicilio</small></span></label>
-                  <label className={"delivery-option " + (deliveryType === "Punto de encuentro" ? "selected" : "")}><input type="radio" name="fulfillment" value="Punto de encuentro" checked={deliveryType === "Punto de encuentro"} onChange={(event) => setDeliveryType(event.target.value)} required /><span><strong>Punto de encuentro</strong><small>Coordinamos un lugar</small></span></label>
+            <div className="ck-field">
+              <label htmlFor="customerName">Nombre</label>
+              <input id="customerName" className="ck-input" name="customerName" type="text" value={customerName} onChange={(event) => setCustomerName(event.target.value)} onFocus={scrollCheckoutFieldIntoView} minLength={3} maxLength={100} autoComplete="name" placeholder="Tu nombre y apellido" required />
+            </div>
+            <div className="ck-field">
+              <label htmlFor="customerPhone">Teléfono</label>
+              <input id="customerPhone" className="ck-input" name="customerPhone" type="text" value={customerPhone} onChange={(event) => setCustomerPhone(formatArgentineLocalPhone(event.target.value))} onFocus={scrollCheckoutFieldIntoView} inputMode="numeric" maxLength={12} autoComplete="off" autoCapitalize="none" autoCorrect="off" placeholder="381 123-4567" required />
+            </div>
+            <fieldset className="ck-field">
+              <legend>¿Cómo lo recibís?</legend>
+              <div className="ck-options">
+                <div className={`ck-option ${deliveryType === "Envío" ? "is-on" : ""}`}>
+                  <label className="ck-option-row">
+                    <input type="radio" name="fulfillment" value="Envío" checked={deliveryType === "Envío"} onChange={(event) => setDeliveryType(event.target.value)} required />
+                    <span><strong>Envío a domicilio</strong><small>Te lo llevamos</small></span>
+                    <Truck size={18} aria-hidden="true" />
+                  </label>
+                  {deliveryType === "Envío" ? <input id="address" className="ck-input ck-address" name="address" type="text" placeholder="Calle, número y barrio" aria-label="Dirección de entrega" onFocus={scrollCheckoutFieldIntoView} autoComplete="street-address" required /> : null}
+                </div>
+                <div className={`ck-option ${deliveryType === "Punto de encuentro" ? "is-on" : ""}`}>
+                  <label className="ck-option-row">
+                    <input type="radio" name="fulfillment" value="Punto de encuentro" checked={deliveryType === "Punto de encuentro"} onChange={(event) => setDeliveryType(event.target.value)} required />
+                    <span><strong>Punto de encuentro</strong><small>Coordinamos un lugar</small></span>
+                    <MapPin size={18} aria-hidden="true" />
+                  </label>
                 </div>
               </div>
-              {deliveryType === "Envío" ? <div className="field"><label htmlFor="address">Dirección de entrega</label><input id="address" className="store-field" name="address" type="text" placeholder="Calle, número, barrio / localidad" onFocus={scrollCheckoutFieldIntoView} required /></div> : null}
-              {!store.availability.isOpen ? <p className="closed-notice">{store.availability.label}</p> : null}
-              {error ? <p ref={cartErrorRef} className="form-error" role="alert">{error}</p> : null}
-            </form>
+            </fieldset>
+            {!store.availability.isOpen ? <p className="closed-notice">{store.availability.label}</p> : null}
+            {error ? <p ref={cartErrorRef} className="form-error" role="alert">{error}</p> : null}
+          </form>
+          <div className="ck-foot">
+            {preview ? <p className="send-order-hint">Vista previa: los pedidos están desactivados</p> : null}
+            <button className="ck-cta" form="order-form" disabled={loading || !cart.length || !store.availability.isOpen} type="submit">{loading ? "Preparando tu pedido..." : store.availability.isOpen ? `Enviar pedido · ${formatMoney(cartTotal)}` : "Tienda cerrada"}</button>
           </div>
-        </div>
-        <div className="cart-footer">
-          <div className="cart-total"><span>Total estimado</span><span>{formatMoney(cartTotal)}</span></div>
-          {preview ? <p className="send-order-hint">Vista previa: los pedidos están desactivados</p> : null}
-          <button className="btn send-order" form="order-form" disabled={loading || !cart.length || !store.availability.isOpen} type="submit">{loading ? "Preparando tu pedido..." : store.availability.isOpen ? "Enviar pedido" : "Tienda cerrada"}</button>
-        </div>
+        </>}
       </aside>
 
       {magicVisible ? <div className="magic-overlay show" role="status" aria-live="polite" aria-hidden="false"><span className="sparkle s1" /><span className="sparkle s2" /><span className="sparkle s3" /><span className="sparkle s4" /><span className="sparkle s5" /><div className="magic-card"><div className="magic-icon">✓</div><h3>¡Gracias por tu pedido!</h3><p>Ya lo recibimos. En un instante seguimos con la confirmación.</p><div className="magic-loading" aria-hidden="true" /></div></div> : null}

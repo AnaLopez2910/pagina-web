@@ -75,6 +75,9 @@ export async function POST(request: Request) {
   const baseSlug = makeProductSlug(result.data.name);
   const { data: collision } = await supabase.from("products").select("id").eq("store_id", store.id).eq("slug", baseSlug).maybeSingle();
   const slug = collision ? `${baseSlug}-${Date.now().toString(36)}` : baseSlug;
+  // New products go to the end of the manual order.
+  const { data: lastProduct } = await supabase.from("products").select("sort_order").eq("store_id", store.id).order("sort_order", { ascending: false }).limit(1).maybeSingle();
+  const sortOrder = (lastProduct?.sort_order ?? -1) + 1;
   let uploadedImages: string[] = [];
   try {
     uploadedImages = parsedRequest.imageFiles.length ? await uploadProductImages(store.id, parsedRequest.imageFiles) : [];
@@ -90,7 +93,8 @@ export async function POST(request: Request) {
       purchase_price: purchasePrice,
       image_paths: imagePaths,
       is_visible: result.data.isVisible,
-      stock_quantity: result.data.stockQuantity
+      stock_quantity: result.data.stockQuantity,
+      sort_order: sortOrder
     }).select("id").single();
     if (error || !product) throw new Error("No se pudo guardar el producto.");
     await createOptionGroups(supabase, product.id, result.data.optionGroups);

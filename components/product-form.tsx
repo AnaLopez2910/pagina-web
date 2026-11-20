@@ -1,11 +1,13 @@
 "use client";
 
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, ImagePlus, MoreHorizontal, Pencil, Plus, Save, Search, SlidersHorizontal, Tag, Trash2, X } from "lucide-react";
+import { ArrowDownToLine, ArrowUpDown, ArrowUpToLine, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, GripVertical, ImagePlus, MoreHorizontal, Pencil, Plus, Save, Search, SlidersHorizontal, Tag, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { useLockBodyScroll } from "@/components/use-lock-body-scroll";
 import { formatMoney } from "@/lib/money";
+import { orderProducts, PRODUCT_SORT_LABELS, PRODUCT_SORTS, type ProductSort } from "@/lib/product-order";
 import { optimizeProductImages } from "@/lib/product-image-compression";
 
 type CategoryListItem = {
@@ -44,6 +46,8 @@ type ProductListItem = {
   isVisible: boolean;
   stockQuantity: number | null;
   category: { id: string; name: string; slug: string } | null;
+  sortOrder: number;
+  createdAt: string;
   optionGroups: ProductOptionGroup[];
 };
 
@@ -324,12 +328,18 @@ function Toggle({
   );
 }
 
+type ManualOrderTarget = "start" | "end" | { beforeId: string } | { afterId: string };
+
 export function ProductForm({
   products: initialProducts,
-  categories: initialCategories
+  categories: initialCategories,
+  productSort: initialProductSort,
+  soldOutLast: initialSoldOutLast
 }: {
   products: ProductListItem[];
   categories: CategoryListItem[];
+  productSort: ProductSort;
+  soldOutLast: boolean;
 }) {
   const router = useRouter();
   const [products, setProducts] = useState(initialProducts);
@@ -361,13 +371,30 @@ export function ProductForm({
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [imageOptimizing, setImageOptimizing] = useState(false);
+  const [productSort, setProductSort] = useState(initialProductSort);
+  const [soldOutLast, setSoldOutLast] = useState(initialSoldOutLast);
+  const [sortMenuPosition, setSortMenuPosition] = useState<{ top: number; left: number } | null>(null);
+  const [orderBusy, setOrderBusy] = useState(false);
+  const [dragState, setDragState] = useState<{ id: string; from: number; over: number } | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [notice, setNotice] = useState("");
+  const noticeTimer = useRef<number | undefined>(undefined);
+  const listRef = useRef<HTMLDivElement>(null);
+  const bulkCategoryRef = useRef<HTMLDivElement>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
   const menuFirstActionRef = useRef<HTMLButtonElement>(null);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
-  useLockBodyScroll(isProductModalOpen || Boolean(variantDrawer) || filterModalOpen || Boolean(priceStockProduct));
+  useLockBodyScroll(isProductModalOpen || Boolean(variantDrawer) || filterModalOpen || Boolean(priceStockProduct) || Boolean(sortMenuPosition) || bulkDeleteOpen);
+
+  const categoryIds = useMemo(() => categories.map((category) => category.id), [categories]);
+  // The list mirrors the storefront order. "Aleatorio" shuffles per visit, so here it shows the manual order.
+  const orderedProducts = useMemo(
+    () => orderProducts(products, productSort === "random" ? "manual" : productSort, { soldOutLast, categoryIds }),
+    [categoryIds, productSort, products, soldOutLast]
+  );
 
   const filteredProducts = useMemo(() => {
-    return products.filter((product) => {
+    return orderedProducts.filter((product) => {
       const matchesQuery = [product.name, product.description ?? "", product.category?.name ?? ""]
         .join(" ")
         .toLocaleLowerCase("es-AR")
@@ -381,7 +408,7 @@ export function ProductForm({
       const matchesVisibility = visibilityFilter === "all" || product.isVisible === (visibilityFilter === "visible");
       return matchesQuery && matchesCategory && matchesLowStock && matchesPromo && matchesVisibility;
     });
-  }, [categoryFilter, lowStockFilter, products, promoFilter, query, visibilityFilter]);
+  }, [categoryFilter, lowStockFilter, orderedProducts, promoFilter, query, visibilityFilter]);
 
   const pageCount = Math.max(1, Math.ceil(filteredProducts.length / PRODUCT_PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
@@ -390,6 +417,9 @@ export function ProductForm({
   const selectedFilteredCount = filteredProducts.filter((product) => selectedProductIds.has(product.id)).length;
   const selectedProducts = products.filter((product) => selectedProductIds.has(product.id));
   const allFilteredSelected = filteredProducts.length > 0 && selectedFilteredCount === filteredProducts.length;
+  const manualOrder = productSort === "manual";
+  // Dragging only makes sense over the whole list, so search and filters pause it.
+  const canDrag = manualOrder && !query.trim() && activeFilterCount === 0;
 
   useEffect(() => {
     if (selectAllRef.current) selectAllRef.current.indeterminate = selectedFilteredCount > 0 && !allFilteredSelected;
@@ -400,17 +430,28 @@ export function ProductForm({
   }, [actionsProduct]);
 
   useEffect(() => {
-    if (!filterModalOpen && !actionsProduct && !priceStockProduct) return;
+    if (!filterModalOpen && !actionsProduct && !priceStockProduct && !sortMenuPosition && !bulkDeleteOpen) return;
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setFilterModalOpen(false);
         if (actionsProduct) closeProductMenu();
         setPriceStockProduct(null);
+        setSortMenuPosition(null);
+        if (!bulkBusy) setBulkDeleteOpen(false);
       }
     }
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [actionsProduct, filterModalOpen, priceStockProduct]);
+  }, [actionsProduct, bulkBusy, bulkDeleteOpen, filterModalOpen, priceStockProduct, sortMenuPosition]);
+
+  useEffect(() => {
+    if (!sortMenuPosition) return;
+    function closeSortMenu() { setSortMenuPosition(null); }
+    window.addEventListener("resize", closeSortMenu);
+    return () => window.removeEventListener("resize", closeSortMenu);
+  }, [sortMenuPosition]);
+
+  useEffect(() => () => window.clearTimeout(noticeTimer.current), []);
 
   useEffect(() => {
     if (!actionsProduct) return;
@@ -475,13 +516,176 @@ export function ProductForm({
     menuTriggerRef.current = event.currentTarget;
     const rect = event.currentTarget.getBoundingClientRect();
     const menuWidth = Math.min(272, window.innerWidth - 24);
-    const menuHeight = 260;
+    const menuHeight = manualOrder ? 356 : 260;
     let top = rect.bottom + 8;
     if (top + menuHeight > window.innerHeight - 12) top = rect.top - menuHeight - 8;
     top = Math.max(12, Math.min(top, window.innerHeight - menuHeight - 12));
     const left = Math.max(12, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 12));
     setActionsMenuPosition({ top, left });
     setActionsProduct(product);
+  }
+
+  function showNotice(message: string) {
+    setNotice(message);
+    window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setNotice(""), 3200);
+  }
+
+  function openSortMenu(event: React.MouseEvent<HTMLButtonElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 340;
+    const menuHeight = 520;
+    const top = Math.max(12, Math.min(rect.bottom + 8, window.innerHeight - menuHeight - 12));
+    const left = Math.max(12, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 12));
+    setError("");
+    setSortMenuPosition({ top, left });
+  }
+
+  async function saveSortSettings(next: { productSort: ProductSort; soldOutLast: boolean }) {
+    const previous = { productSort, soldOutLast };
+    setProductSort(next.productSort);
+    setSoldOutLast(next.soldOutLast);
+    setOrderBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/products/order", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(next)
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setProductSort(previous.productSort);
+        setSoldOutLast(previous.soldOutLast);
+        setError(data?.error ?? "No se pudo guardar el orden.");
+        return;
+      }
+      setPage(1);
+      router.refresh();
+    } catch {
+      setProductSort(previous.productSort);
+      setSoldOutLast(previous.soldOutLast);
+      setError("No se pudo conectar para guardar el orden.");
+    } finally {
+      setOrderBusy(false);
+    }
+  }
+
+  async function saveManualOrder(productIds: string[]) {
+    const previousProducts = products;
+    const positions = new Map(productIds.map((id, index) => [id, index]));
+    setProducts((current) => current.map((product) => ({ ...product, sortOrder: positions.get(product.id) ?? product.sortOrder })));
+    setOrderBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/products/order", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productIds })
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setProducts(previousProducts);
+        setError(data?.error ?? "No se pudo guardar el orden.");
+        return;
+      }
+      router.refresh();
+    } catch {
+      setProducts(previousProducts);
+      setError("No se pudo conectar para guardar el orden.");
+    } finally {
+      setOrderBusy(false);
+    }
+  }
+
+  function moveProduct(productId: string, target: ManualOrderTarget) {
+    const ids = orderProducts(products, "manual", { soldOutLast: false }).map((product) => product.id).filter((id) => id !== productId);
+    let index = ids.length;
+    if (target === "start") index = 0;
+    else if (typeof target === "object" && "beforeId" in target) index = ids.indexOf(target.beforeId);
+    else if (typeof target === "object") index = ids.indexOf(target.afterId) + 1;
+    ids.splice(index < 0 ? ids.length : index, 0, productId);
+    void saveManualOrder(ids);
+  }
+
+  function dropIndexAt(clientY: number) {
+    const rows = Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-product-row]") ?? []);
+    const index = rows.findIndex((row) => {
+      const rect = row.getBoundingClientRect();
+      return clientY < rect.top + rect.height / 2;
+    });
+    return index === -1 ? rows.length : index;
+  }
+
+  function startDrag(event: React.PointerEvent<HTMLButtonElement>, productId: string, index: number) {
+    if (!canDrag || orderBusy || event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragState({ id: productId, from: index, over: index });
+  }
+
+  function moveDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    if (!dragState) return;
+    // Scroll while dragging near the edges so a product can travel the whole page.
+    if (event.clientY < 90) window.scrollBy(0, -14);
+    else if (event.clientY > window.innerHeight - 90) window.scrollBy(0, 14);
+    const over = dropIndexAt(event.clientY);
+    if (over !== dragState.over) setDragState({ ...dragState, over });
+  }
+
+  function endDrag() {
+    if (!dragState) return;
+    const { id, from, over } = dragState;
+    setDragState(null);
+    if (over === from || over === from + 1) return;
+    moveProduct(id, over >= pageProducts.length ? { afterId: pageProducts[pageProducts.length - 1].id } : { beforeId: pageProducts[over].id });
+  }
+
+  function openBulkCategoryPicker() {
+    setBulkCategoryOpen(true);
+    setBulkCategoryId("");
+    setBulkCategoryName("");
+    window.requestAnimationFrame(() => bulkCategoryRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }));
+  }
+
+  async function deleteSelectedProducts() {
+    const productIds = Array.from(selectedProductIds);
+    if (!productIds.length) return;
+    setBulkBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/products/bulk", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productIds })
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setError(data?.error ?? "No se pudieron eliminar los productos seleccionados.");
+        return;
+      }
+      const deletedIds = new Set<string>(data?.deletedIds ?? productIds);
+      setProducts((current) => current.filter((product) => !deletedIds.has(product.id)));
+      if (editingProductId && deletedIds.has(editingProductId)) {
+        resetDraft();
+        setProductModalOpen(false);
+      }
+      setBulkDeleteOpen(false);
+      clearSelection();
+      setPage(1);
+      showNotice(deletedIds.size === 1 ? "Se eliminó 1 producto" : `Se eliminaron ${deletedIds.size} productos`);
+      await refreshCategories();
+      router.refresh();
+    } catch {
+      setError("No se pudo conectar para eliminar los productos seleccionados.");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  function hideSelectedInstead() {
+    setBulkDeleteOpen(false);
+    void applyBulkUpdate({ action: "visibility", isVisible: false });
   }
 
   function openDuplicateProduct(product: ProductListItem) {
@@ -922,7 +1126,7 @@ export function ProductForm({
   return (
     <div className="grid gap-6">
       <section className="panel overflow-hidden">
-        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 border-b border-line p-3 sm:flex sm:items-center sm:p-4">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-2 border-b border-line p-3 sm:flex sm:items-center sm:p-4">
           <label className="relative min-w-0 flex-1">
             <span className="sr-only">Buscar productos por nombre o categoría</span>
             <Search size={17} aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" />
@@ -932,22 +1136,31 @@ export function ProductForm({
             <SlidersHorizontal size={17} /> <span className="hidden sm:inline">Filtrar</span>
             {activeFilterCount ? <span className="grid h-5 min-w-5 place-items-center rounded-full bg-brand px-1 text-[11px] font-black text-white">{activeFilterCount}</span> : null}
           </button>
-          <button className="btn-primary col-span-2 !min-h-12 w-full whitespace-nowrap sm:col-span-1 sm:ml-auto sm:w-auto" type="button" onClick={openNewProduct}>
+          <button className="btn-secondary !min-h-12 !w-12 !rounded-xl !p-0 sm:!w-auto sm:!px-4" type="button" onClick={openSortMenu} aria-label={`Orden en la tienda: ${PRODUCT_SORT_LABELS[productSort].title}`} aria-haspopup="dialog" aria-expanded={Boolean(sortMenuPosition)}>
+            <ArrowUpDown size={17} /> <span className="hidden sm:inline">Orden: <span className="text-brand">{PRODUCT_SORT_LABELS[productSort].title}</span></span>
+          </button>
+          <button className="btn-primary col-span-3 !min-h-12 w-full whitespace-nowrap sm:col-span-1 sm:ml-auto sm:w-auto" type="button" onClick={openNewProduct}>
             <Plus size={17} /> Nuevo producto
           </button>
         </div>
 
-        {error && !isProductModalOpen && !priceStockProduct ? <p className="border-b border-line bg-red-50 p-4 text-sm font-semibold text-red-700">{error}</p> : null}
+        {error && !isProductModalOpen && !priceStockProduct && !sortMenuPosition && !bulkDeleteOpen ? <p className="border-b border-line bg-red-50 p-4 text-sm font-semibold text-red-700">{error}</p> : null}
 
         <div className="flex min-h-12 items-center justify-between gap-3 border-b border-line px-3 py-2 text-sm sm:px-4">
           <label className="flex min-h-9 min-w-0 cursor-pointer items-center gap-2.5">
             <input ref={selectAllRef} className="h-5 w-5 shrink-0 cursor-pointer rounded border-slate-400 accent-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" type="checkbox" checked={allFilteredSelected} onChange={toggleAllFilteredProducts} disabled={filteredProducts.length === 0} aria-label="Seleccionar todos los productos filtrados" />
             <span className="truncate font-bold">{selectedProductIds.size ? `${selectedProductIds.size} seleccionados` : `${filteredProducts.length} producto${filteredProducts.length === 1 ? "" : "s"}`}</span>
           </label>
-          {selectedProductIds.size ? <button className="shrink-0 font-bold text-brand underline underline-offset-4" type="button" onClick={clearSelection}>Limpiar selección</button> : activeFilterCount ? <button className="shrink-0 font-bold text-brand underline underline-offset-4" type="button" onClick={clearProductFilters}>Limpiar filtros</button> : <a className="shrink-0 text-right font-bold text-brand" href="/gestion/categorias">Administrar categorías</a>}
+          {selectedProductIds.size ? <button className="shrink-0 font-bold text-brand underline underline-offset-4" type="button" onClick={clearSelection}>Limpiar selección</button> : activeFilterCount ? <button className="shrink-0 font-bold text-brand underline underline-offset-4" type="button" onClick={clearProductFilters}>Limpiar filtros</button> : <Link className="shrink-0 text-right font-bold text-brand" href="/gestion/categorias">Administrar categorías</Link>}
         </div>
 
-        {selectedProductIds.size ? <div className="grid gap-2 border-b border-line bg-surface px-3 py-2.5 sm:flex sm:flex-wrap sm:items-center sm:px-4">
+        {manualOrder ? <p className="flex items-center gap-2 border-b border-line bg-surface px-3 py-2 text-xs font-semibold text-muted sm:px-4">
+          <GripVertical size={14} aria-hidden="true" className="shrink-0 text-brand" />
+          {canDrag ? "Arrastrá desde la manija para cambiar el orden de la tienda." : "Para mover productos, quitá la búsqueda y los filtros."}
+          {orderBusy ? <span className="ml-auto shrink-0 font-bold">Guardando…</span> : null}
+        </p> : null}
+
+        {selectedProductIds.size ? <div className="hidden gap-2 border-b border-line bg-surface px-3 py-2.5 sm:flex sm:flex-wrap sm:items-center sm:px-4">
           <p className="w-full text-xs font-bold text-muted sm:w-auto sm:pr-1">Editar selección</p>
           <div className="flex flex-wrap gap-2">
             <button className="btn-secondary !min-h-10 !rounded-xl !px-3 !py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50" type="button" onClick={() => void applyBulkUpdate({ action: "visibility", isVisible: true })} disabled={bulkBusy || selectedProducts.every((product) => product.isVisible)}>
@@ -959,11 +1172,15 @@ export function ProductForm({
             <button className="btn-secondary !min-h-10 !rounded-xl !px-3 !py-2 text-xs" type="button" onClick={() => { setBulkCategoryOpen((open) => !open); setBulkCategoryId(""); setBulkCategoryName(""); }} aria-expanded={bulkCategoryOpen}>
               <Tag size={15} /> Categoría
             </button>
+            <span className="mx-0.5 w-px self-stretch bg-line" aria-hidden="true" />
+            <button className="btn-secondary !min-h-10 !rounded-xl !border-red-200 !px-3 !py-2 text-xs !text-red-700 disabled:cursor-not-allowed disabled:opacity-50" type="button" onClick={() => setBulkDeleteOpen(true)} disabled={bulkBusy}>
+              <Trash2 size={15} /> Eliminar {selectedProductIds.size}
+            </button>
             {bulkBusy ? <span className="self-center text-xs font-bold text-muted">Guardando…</span> : null}
           </div>
         </div> : null}
 
-        {selectedProductIds.size && bulkCategoryOpen ? <div className="grid gap-2 border-b border-line bg-white p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end sm:p-4">
+        {selectedProductIds.size && bulkCategoryOpen ? <div ref={bulkCategoryRef} className="grid gap-2 border-b border-line bg-white p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end sm:p-4">
           <label className="grid gap-1 text-xs font-bold text-muted">
             Categoría para {selectedProductIds.size} producto{selectedProductIds.size === 1 ? "" : "s"}
             <select className="field !min-h-11 !rounded-xl !py-2 text-sm" value={bulkCategoryId} onChange={(event) => { setBulkCategoryId(event.target.value); setBulkCategoryName(""); }} disabled={bulkBusy}>
@@ -985,21 +1202,42 @@ export function ProductForm({
           </div>
         </div> : null}
 
-        <div className="divide-y divide-line">
+        <div ref={listRef} className="divide-y divide-line">
           {filteredProducts.length === 0 ? (
             <div className="p-5">
               <p className="font-bold">{products.length ? "No encontramos productos con esos filtros." : "Todavía no hay productos para mostrar."}</p>
               {products.length ? <p className="mt-1 text-sm text-muted">Probá cambiar la búsqueda o quitar algún filtro.</p> : <p className="mt-1 text-sm text-muted">Cuando agregues uno, va a aparecer acá.</p>}
             </div>
           ) : (
-            pageProducts.map((product) => {
+            pageProducts.map((product, index) => {
               const label = discountLabel(product);
               const variantCount = product.optionGroups.reduce((total, group) => total + group.options.length, 0);
               const variantsExpanded = expandedVariantProducts.includes(product.id);
               const quickUpdateBusy = quickUpdateProductId === product.id;
+              const dragging = dragState?.id === product.id;
+              const dropMoves = dragState ? dragState.over !== dragState.from && dragState.over !== dragState.from + 1 : false;
+              const dropBefore = dropMoves && dragState?.over === index;
+              const dropAfter = dropMoves && index === pageProducts.length - 1 && dragState?.over === pageProducts.length;
               return (
-                <article key={product.id} className="px-3 py-3 sm:p-4">
-                  <div className="grid grid-cols-[20px_56px_minmax(0,1fr)_auto] items-center gap-2 sm:grid-cols-[24px_76px_minmax(0,1fr)_auto] sm:gap-4">
+                <article key={product.id} data-product-row className={`relative px-3 py-3 sm:p-4 ${dragging ? "z-[1] rounded-2xl bg-white shadow-[0_14px_30px_rgba(196,87,130,0.25)] ring-2 ring-brand" : ""}`}>
+                  {dropBefore ? <span className="pointer-events-none absolute inset-x-3 -top-[2px] z-[2] h-[3px] rounded-full bg-brand" aria-hidden="true" /> : null}
+                  {dropAfter ? <span className="pointer-events-none absolute inset-x-3 -bottom-[2px] z-[2] h-[3px] rounded-full bg-brand" aria-hidden="true" /> : null}
+                  <div className={`grid items-center gap-2 sm:gap-4 ${manualOrder ? "grid-cols-[16px_20px_56px_minmax(0,1fr)_auto] sm:grid-cols-[18px_24px_76px_minmax(0,1fr)_auto]" : "grid-cols-[20px_56px_minmax(0,1fr)_auto] sm:grid-cols-[24px_76px_minmax(0,1fr)_auto]"}`}>
+                    {manualOrder ? (
+                      <button
+                        className={`grid h-11 w-4 touch-none place-items-center text-slate-400 sm:w-[18px] ${canDrag && !orderBusy ? (dragging ? "cursor-grabbing text-brand" : "cursor-grab hover:text-brand") : "cursor-not-allowed opacity-30"}`}
+                        type="button"
+                        aria-label={`Mover ${product.name}`}
+                        title={canDrag ? "Arrastrá para mover" : "Quitá la búsqueda y los filtros para mover"}
+                        disabled={!canDrag || orderBusy}
+                        onPointerDown={(event) => startDrag(event, product.id, index)}
+                        onPointerMove={moveDrag}
+                        onPointerUp={endDrag}
+                        onPointerCancel={() => setDragState(null)}
+                      >
+                        <GripVertical size={16} aria-hidden="true" />
+                      </button>
+                    ) : null}
                     <label className="grid min-h-9 min-w-5 cursor-pointer place-items-center" aria-label={`Seleccionar ${product.name}`}>
                       <input className="h-5 w-5 cursor-pointer rounded border-slate-400 accent-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" type="checkbox" checked={selectedProductIds.has(product.id)} onChange={() => toggleProductSelection(product.id)} />
                     </label>
@@ -1059,6 +1297,76 @@ export function ProductForm({
         </div> : null}
       </section>
 
+      {selectedProductIds.size ? <>
+        {/* Phones: the selection actions float at the bottom so they stay reachable while scrolling. */}
+        <div className="h-20 sm:hidden" aria-hidden="true" />
+        <div className="fixed inset-x-3 bottom-3 z-[60] flex items-center gap-1.5 rounded-2xl bg-[#2a1e29] py-2 pl-4 pr-2 text-white shadow-[0_14px_30px_rgba(0,0,0,0.25)] sm:hidden" role="toolbar" aria-label="Acciones para los productos seleccionados">
+          <p className="min-w-0 flex-1 truncate text-sm font-bold">{selectedProductIds.size} seleccionado{selectedProductIds.size === 1 ? "" : "s"}</p>
+          <button className="grid h-10 w-10 place-items-center rounded-xl bg-white/10 disabled:opacity-40" type="button" aria-label="Mostrar en la tienda" onClick={() => void applyBulkUpdate({ action: "visibility", isVisible: true })} disabled={bulkBusy || selectedProducts.every((product) => product.isVisible)}><Eye size={18} /></button>
+          <button className="grid h-10 w-10 place-items-center rounded-xl bg-white/10 disabled:opacity-40" type="button" aria-label="Ocultar de la tienda" onClick={() => void applyBulkUpdate({ action: "visibility", isVisible: false })} disabled={bulkBusy || selectedProducts.every((product) => !product.isVisible)}><EyeOff size={18} /></button>
+          <button className="grid h-10 w-10 place-items-center rounded-xl bg-white/10 disabled:opacity-40" type="button" aria-label="Cambiar categoría" onClick={openBulkCategoryPicker} disabled={bulkBusy}><Tag size={18} /></button>
+          <button className="grid h-10 w-10 place-items-center rounded-xl bg-[#e5484d] disabled:opacity-40" type="button" aria-label={`Eliminar ${selectedProductIds.size} productos`} onClick={() => setBulkDeleteOpen(true)} disabled={bulkBusy}><Trash2 size={18} /></button>
+        </div>
+      </> : null}
+
+      {notice ? <p className="fixed bottom-5 left-1/2 z-[85] flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-2xl bg-[#2a1e29] px-4 py-3 text-sm font-semibold text-white shadow-[0_12px_30px_rgba(0,0,0,0.2)]" role="status"><Check size={17} className="text-green-300" aria-hidden="true" /> {notice}</p> : null}
+
+      {sortMenuPosition ? <div className="fixed inset-0 z-[70] flex items-end bg-slate-950/45 sm:block sm:bg-transparent" role="presentation" onClick={() => setSortMenuPosition(null)}>
+        <section className="grid max-h-[88dvh] w-full gap-1 overflow-y-auto rounded-t-3xl bg-white p-4 pb-5 shadow-[0_-10px_40px_rgba(0,0,0,0.18)] sm:absolute sm:w-[340px] sm:rounded-2xl sm:border sm:border-line sm:p-2 sm:shadow-[0_18px_50px_rgba(52,38,53,0.2)]" style={sortMenuPosition} role="dialog" aria-modal="true" aria-labelledby="product-sort-title" onClick={(event) => event.stopPropagation()}>
+          <span className="mx-auto mb-2 h-1 w-10 rounded-full bg-line sm:hidden" aria-hidden="true" />
+          <header className="px-2 pb-2 pt-1">
+            <h2 id="product-sort-title" className="font-black sm:text-sm">Orden en la tienda</h2>
+            <p className="text-sm text-muted sm:text-xs">Así se muestran los productos a tus clientas.</p>
+          </header>
+          <fieldset className="grid gap-0.5" disabled={orderBusy}>
+            <legend className="sr-only">Orden de los productos</legend>
+            {PRODUCT_SORTS.map((sort) => <label key={sort} className={`grid cursor-pointer grid-cols-[18px_minmax(0,1fr)] items-start gap-3 rounded-xl px-2.5 py-2.5 ${productSort === sort ? "bg-blush/50" : "hover:bg-surface"}`}>
+              <input className="mt-0.5 h-[18px] w-[18px] accent-brand" type="radio" name="product-sort" checked={productSort === sort} onChange={() => void saveSortSettings({ productSort: sort, soldOutLast })} />
+              <span><b className="block text-sm">{PRODUCT_SORT_LABELS[sort].title}</b><span className="block text-xs text-muted">{PRODUCT_SORT_LABELS[sort].hint}</span></span>
+            </label>)}
+          </fieldset>
+          <label className="mt-1 flex cursor-pointer items-center gap-3 border-t border-line px-2.5 pb-1 pt-3 text-sm font-semibold">
+            <input className="h-[18px] w-[18px] accent-brand" type="checkbox" checked={soldOutLast} disabled={orderBusy} onChange={(event) => void saveSortSettings({ productSort, soldOutLast: event.target.checked })} />
+            Mandar los sin stock al final
+          </label>
+          {error ? <p className="mx-2 mt-2 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700" role="alert">{error}</p> : null}
+          <button className="btn-primary mt-3 min-h-12 !rounded-2xl sm:hidden" type="button" onClick={() => setSortMenuPosition(null)}>Listo</button>
+        </section>
+      </div> : null}
+
+      {bulkDeleteOpen && selectedProducts.length ? <div className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/45 p-0 sm:items-center sm:p-4" role="presentation" onClick={() => { if (!bulkBusy) setBulkDeleteOpen(false); }}>
+        <section className="panel grid max-h-[92dvh] w-full max-w-md gap-4 overflow-y-auto rounded-b-none p-5 sm:rounded-2xl sm:p-6" role="alertdialog" aria-modal="true" aria-labelledby="bulk-delete-title" aria-describedby="bulk-delete-text" onClick={(event) => event.stopPropagation()}>
+          <span className="grid h-11 w-11 place-items-center rounded-2xl bg-red-50 text-red-700" aria-hidden="true"><Trash2 size={20} /></span>
+          <div>
+            <h2 id="bulk-delete-title" className="text-xl font-black">¿Eliminar {selectedProducts.length === 1 ? "1 producto" : `${selectedProducts.length} productos`}?</h2>
+            <p id="bulk-delete-text" className="mt-1 text-sm text-muted">Se borran de la tienda y del panel, junto con sus fotos. No se puede deshacer.</p>
+          </div>
+          <ul className="grid gap-2 rounded-2xl border border-line bg-surface p-2.5">
+            {selectedProducts.slice(0, 4).map((product) => <li key={product.id} className="flex items-center gap-2.5 text-sm font-bold">
+              {product.imageUrls[0] ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={product.imageUrls[0]} alt="" className="h-9 w-9 shrink-0 rounded-lg object-cover" />
+              ) : <span className="h-9 w-9 shrink-0 rounded-lg bg-blush" />}
+              <span className="min-w-0 flex-1 truncate">{product.name}</span>
+              <span className="shrink-0 font-semibold text-muted">{formatMoney(effectivePrice(product))}</span>
+            </li>)}
+            {selectedProducts.length > 4 ? <li className="pl-1 text-sm font-semibold text-muted">y {selectedProducts.length - 4} más</li> : null}
+          </ul>
+          <p className="text-xs text-muted">
+            Los pedidos que ya recibiste no cambian.
+            {selectedProducts.some((product) => product.isVisible) ? <span className="hidden sm:inline"> ¿Solo querés sacarlos de la tienda? <button className="font-bold text-brand underline underline-offset-2" type="button" onClick={hideSelectedInstead} disabled={bulkBusy}>Ocultalos</button>.</span> : null}
+          </p>
+          {error ? <p className="rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700" role="alert">{error}</p> : null}
+          <div className="grid gap-2 border-t border-line pt-4 sm:flex sm:justify-end">
+            <button className="btn-primary min-h-11 !rounded-xl !bg-red-700 !bg-none disabled:cursor-not-allowed disabled:opacity-60 sm:order-2" type="button" onClick={() => void deleteSelectedProducts()} disabled={bulkBusy}>
+              <Trash2 size={17} /> {bulkBusy ? "Eliminando…" : `Eliminar ${selectedProducts.length === 1 ? "1 producto" : `${selectedProducts.length} productos`}`}
+            </button>
+            {selectedProducts.some((product) => product.isVisible) ? <button className="btn-secondary min-h-11 !rounded-xl sm:hidden" type="button" onClick={hideSelectedInstead} disabled={bulkBusy}><EyeOff size={17} /> Mejor ocultarlos</button> : null}
+            <button className="btn-secondary min-h-11 !rounded-xl !border-transparent sm:order-1" type="button" onClick={() => setBulkDeleteOpen(false)} disabled={bulkBusy}>Cancelar</button>
+          </div>
+        </section>
+      </div> : null}
+
       {filterModalOpen ? <div className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/45 p-0 sm:items-center sm:p-4" role="presentation" onClick={() => setFilterModalOpen(false)}>
         <section className="panel grid max-h-[90dvh] w-full max-w-lg gap-5 overflow-y-auto rounded-b-none p-5 sm:rounded-2xl sm:p-6" role="dialog" aria-modal="true" aria-labelledby="product-filter-title" onClick={(event) => event.stopPropagation()}>
           <header className="flex items-start justify-between gap-4">
@@ -1113,6 +1421,14 @@ export function ProductForm({
             {actionsProduct.isVisible ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
             {actionsProduct.isVisible ? "Ocultar producto" : "Mostrar producto"}
           </button>
+          {manualOrder ? <>
+            <button className="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm font-semibold hover:bg-surface focus-visible:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:opacity-50" type="button" role="menuitem" disabled={orderBusy} onClick={() => { const product = actionsProduct; setActionsProduct(null); moveProduct(product.id, "start"); }}>
+              <ArrowUpToLine size={18} aria-hidden="true" /> Mover al principio
+            </button>
+            <button className="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm font-semibold hover:bg-surface focus-visible:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:opacity-50" type="button" role="menuitem" disabled={orderBusy} onClick={() => { const product = actionsProduct; setActionsProduct(null); moveProduct(product.id, "end"); }}>
+              <ArrowDownToLine size={18} aria-hidden="true" /> Mover al final
+            </button>
+          </> : null}
           <button className="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm font-semibold text-red-700 hover:bg-red-50 focus-visible:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2" type="button" role="menuitem" onClick={() => { const product = actionsProduct; setActionsProduct(null); void deleteProduct(product); }}>
             <Trash2 size={18} aria-hidden="true" /> Borrar producto
           </button>
