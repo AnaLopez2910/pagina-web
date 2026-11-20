@@ -3,8 +3,8 @@
 
 import "@/app/storefront.css";
 
-import { ArrowLeft, ArrowUpDown, Check, ChevronLeft, ChevronRight, ImageIcon, MapPin, Minus, Plus, Search, ShoppingCart, Trash2, Truck, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type FormEvent } from "react";
+import { ArrowLeft, ArrowUpDown, Check, ChevronLeft, ChevronRight, ImageIcon, MapPin, Maximize2, Minus, Plus, Search, ShoppingCart, Trash2, Truck, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 
 import { SectionTitle, StorefrontLayout, type CatalogCopy, type StorefrontView } from "@/components/storefront-layout";
 import { useLockBodyScroll } from "@/components/use-lock-body-scroll";
@@ -90,6 +90,12 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
   const [shopperSort, setShopperSort] = useState<ShopperSort>("recommended");
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const photoTouchStart = useRef<number | null>(null);
+  const photoSwiped = useRef(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
+  // Zoom doubles the photo around the spot that was tapped (x/y in percent).
+  const [viewerZoom, setViewerZoom] = useState<{ x: number; y: number } | null>(null);
+  const viewerPointer = useRef<{ x: number; y: number } | null>(null);
+  const viewerLastTap = useRef(0);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [deliveryType, setDeliveryType] = useState("Punto de encuentro");
@@ -167,6 +173,13 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
   useEffect(() => {
     if (!activeProduct && !checkoutOpen && !sortMenuOpen) return;
     function handleKeyDown(event: KeyboardEvent) {
+      // The photo viewer sits on top of the product: Escape closes only the viewer and arrows move between photos.
+      if (viewerOpen && activeProduct) {
+        if (event.key === "Escape") closeViewer();
+        else if (event.key === "ArrowRight") showViewerImage(activeImageIndex + 1);
+        else if (event.key === "ArrowLeft") showViewerImage(activeImageIndex - 1);
+        return;
+      }
       if (event.key !== "Escape") return;
       setActiveProduct(null);
       setCheckoutOpen(false);
@@ -174,7 +187,7 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [activeProduct, checkoutOpen, sortMenuOpen]);
+  });
 
   useEffect(() => {
     if (!activeProduct || !error) return;
@@ -224,6 +237,8 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
   function openProduct(product: StorefrontProduct) {
     setActiveProduct(product);
     setActiveImageIndex(0);
+    setViewerOpen(false);
+    setViewerZoom(null);
     setSelectedOptionIds([]);
     setQuantity(1);
     setError("");
@@ -342,6 +357,51 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
     if (!activeProduct?.imageUrls.length) return;
     const count = activeProduct.imageUrls.length;
     setActiveImageIndex((index + count) % count);
+  }
+
+  function openViewer() {
+    if (!activeProduct?.imageUrls.length) return;
+    setViewerZoom(null);
+    setViewerOpen(true);
+  }
+
+  function closeViewer() {
+    setViewerOpen(false);
+    setViewerZoom(null);
+  }
+
+  function showViewerImage(index: number) {
+    setViewerZoom(null);
+    showProductImage(index);
+  }
+
+  function startViewerGesture(event: ReactPointerEvent<HTMLDivElement>) {
+    viewerPointer.current = { x: event.clientX, y: event.clientY };
+  }
+
+  // One gesture handler for mouse and touch: a horizontal swipe changes photo, a double tap toggles zoom.
+  function endViewerGesture(event: ReactPointerEvent<HTMLDivElement>) {
+    const start = viewerPointer.current;
+    viewerPointer.current = null;
+    if (!start) return;
+    const dx = event.clientX - start.x;
+    if (!viewerZoom && Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(event.clientY - start.y)) {
+      showViewerImage(activeImageIndex + (dx < 0 ? 1 : -1));
+      return;
+    }
+    if (Math.abs(dx) > 10 || !(event.target instanceof HTMLImageElement)) return;
+    const now = Date.now();
+    if (now - viewerLastTap.current < 320) {
+      viewerLastTap.current = 0;
+      if (viewerZoom) {
+        setViewerZoom(null);
+      } else {
+        const rect = event.target.getBoundingClientRect();
+        setViewerZoom({ x: ((event.clientX - rect.left) / rect.width) * 100, y: ((event.clientY - rect.top) / rect.height) * 100 });
+      }
+      return;
+    }
+    viewerLastTap.current = now;
   }
 
   function goToCheckoutDetails() {
@@ -533,17 +593,23 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
             <section className="mn-sheet" role="dialog" aria-modal="true" aria-labelledby="product-modal-title" onClick={(event) => event.stopPropagation()}>
               <div className="mn-sheet-media">
                 <div
-                  className="mn-sheet-photo"
-                  onTouchStart={(event) => { photoTouchStart.current = event.touches[0]?.clientX ?? null; }}
+                  className={`mn-sheet-photo ${activeProduct.imageUrls.length ? "can-expand" : ""}`}
+                  onClick={(event) => {
+                    if (photoSwiped.current || event.target !== event.currentTarget && !(event.target instanceof HTMLImageElement)) return;
+                    openViewer();
+                  }}
+                  onTouchStart={(event) => { photoTouchStart.current = event.touches[0]?.clientX ?? null; photoSwiped.current = false; }}
                   onTouchEnd={(event) => {
                     const start = photoTouchStart.current;
                     const end = event.changedTouches[0]?.clientX;
                     photoTouchStart.current = null;
                     if (start === null || end === undefined || Math.abs(end - start) < 40) return;
+                    photoSwiped.current = true;
                     showProductImage(activeImageIndex + (end < start ? 1 : -1));
                   }}
                 >
                   {activeProduct.imageUrls.length ? <img src={activeProduct.imageUrls[activeImageIndex] ?? activeProduct.imageUrls[0]} alt={`${activeProduct.name}, foto ${activeImageIndex + 1}`} /> : <ImageIcon size={32} aria-hidden="true" />}
+                  {activeProduct.imageUrls.length ? <button className="mn-sheet-expand" onClick={openViewer} type="button"><Maximize2 size={15} aria-hidden="true" /> Ver completa</button> : null}
                   {activeProduct.imageUrls.length > 1 ? <>
                     <button className="mn-sheet-arrow is-prev" onClick={() => showProductImage(activeImageIndex - 1)} aria-label="Foto anterior" type="button"><ChevronLeft size={20} /></button>
                     <button className="mn-sheet-arrow is-next" onClick={() => showProductImage(activeImageIndex + 1)} aria-label="Foto siguiente" type="button"><ChevronRight size={20} /></button>
@@ -616,6 +682,42 @@ export function PublicStore({ store, products, preview = false }: { store: Publi
                 </div>
               </div>
             </section>
+          </div>
+        </div>
+      ) : null}
+
+      {activeProduct && viewerOpen && activeProduct.imageUrls.length ? (
+        <div className="mn-viewer" role="dialog" aria-modal="true" aria-label={`Fotos de ${activeProduct.name}`}>
+          <div className="mn-viewer-top">
+            <span className="mn-viewer-count">{activeImageIndex + 1} / {activeProduct.imageUrls.length}</span>
+            <span className="mn-viewer-name">{activeProduct.name}</span>
+            <button className="mn-viewer-btn" onClick={closeViewer} aria-label="Cerrar fotos" type="button" autoFocus><X size={20} /></button>
+          </div>
+          <div className="mn-viewer-stage" onPointerDown={startViewerGesture} onPointerUp={endViewerGesture} onPointerCancel={() => { viewerPointer.current = null; }}>
+            <img
+              key={activeImageIndex}
+              src={activeProduct.imageUrls[activeImageIndex] ?? activeProduct.imageUrls[0]}
+              alt={`${activeProduct.name}, foto ${activeImageIndex + 1}`}
+              className={viewerZoom ? "is-zoomed" : ""}
+              style={viewerZoom ? { transformOrigin: `${viewerZoom.x}% ${viewerZoom.y}%` } : undefined}
+              draggable={false}
+            />
+            {activeProduct.imageUrls.length > 1 ? <>
+              <button className="mn-viewer-btn mn-viewer-arrow is-prev" onPointerUp={(event) => event.stopPropagation()} onClick={() => showViewerImage(activeImageIndex - 1)} aria-label="Foto anterior" type="button"><ChevronLeft size={22} /></button>
+              <button className="mn-viewer-btn mn-viewer-arrow is-next" onPointerUp={(event) => event.stopPropagation()} onClick={() => showViewerImage(activeImageIndex + 1)} aria-label="Foto siguiente" type="button"><ChevronRight size={22} /></button>
+            </> : null}
+          </div>
+          <div className="mn-viewer-bottom">
+            {activeProduct.imageUrls.length > 1 ? (
+              <div className="mn-viewer-thumbs" role="group" aria-label="Elegir foto">
+                {activeProduct.imageUrls.map((url, index) => (
+                  <button key={`${url}-${index}`} className={index === activeImageIndex ? "is-on" : ""} onClick={() => showViewerImage(index)} aria-label={`Ver foto ${index + 1}`} aria-pressed={index === activeImageIndex} type="button">
+                    <img src={url} alt="" loading="lazy" />
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            <p className="mn-viewer-hint"><span className="is-desktop">Doble clic para hacer zoom · Esc para cerrar</span><span className="is-touch">Deslizá para ver más · doble toque para zoom</span></p>
           </div>
         </div>
       ) : null}
